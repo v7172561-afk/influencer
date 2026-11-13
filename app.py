@@ -220,7 +220,6 @@ def google_access_token() -> str:
 def generate_video(prompt: str, reference_uri: str = "", local_reference_path: str = "") -> bytes:
     check_generation_limit("video")
     client=__import__("google.genai",fromlist=["Client"]).Client(api_key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
-    input_items=[]
     if reference_uri or local_reference_path:
         if reference_uri.startswith("hf://"):
             local_ref=MEDIA_DIR/"video_reference_source"
@@ -234,17 +233,19 @@ def generate_video(prompt: str, reference_uri: str = "", local_reference_path: s
             source.convert("RGB").save(image_buffer,format="JPEG",quality=95)
             image_bytes=image_buffer.getvalue()
         image_b64=base64.b64encode(image_bytes).decode("ascii")
-        input_items=[
+        input_payload=[
             {"type":"image","data":image_b64,"mime_type":"image/jpeg"},
-            {"type":"text","text":prompt+" The person in <IMAGE_REF_0> is the same fictional adult influencer. Use this image as a visual identity reference, not necessarily as the first frame. Preserve facial identity, hairstyle and overall appearance."},
+            {"type":"text","text":prompt+" The person in <IMAGE_REF_0> is the same fictional adult influencer. Preserve her facial identity, hairstyle and overall appearance while animating the described scene."},
         ]
         task="reference_to_video"
     else:
-        input_items=[{"type":"text","text":prompt+" Create an original vertical 9:16 social video. The subject must be an adult fictional character."}]
+        input_payload=prompt+" Create an original vertical short video featuring fictional adult characters."
         task="text_to_video"
     interaction=client.interactions.create(
         model=setting("GEMINI_VIDEO_MODEL","gemini-omni-1.1-flash"),
-        input=input_items,
+        input=input_payload,
+        response_format={"type":"video","aspect_ratio":"9:16"},
+        generation_config={"video_config":{"task":task}},
     )
     video=getattr(interaction,"output_video",None)
     data=getattr(video,"data",None) if video else None
@@ -483,12 +484,12 @@ elif page=="Create content":
         st.info("No saved portrait yet? You can still create a video from text. Save a model portrait first if you want to use that character as a visual reference.")
     topic=st.text_input("Video idea",placeholder="e.g. 3 easy summer outfit ideas")
     scene=st.text_area("What should happen in the video?", "The influencer smiles at the camera, walks naturally toward the camera, and shows the outfit in a bright modern studio. Natural motion, realistic hands, no text overlays.")
-    duration=st.select_slider("Video length",options=["5 seconds","8 seconds","10 seconds","12 seconds","15 seconds"],value="8 seconds")
+    st.caption("Gemini Omni Flash currently chooses the generated clip length; use the prompt to guide pacing and scene complexity.")
     if st.button("Create video",type="primary"):
         try:
             with st.spinner("Preparing your video job..."):
                 reference_instruction="Use the saved portrait as the same adult influencer and preserve her identity." if has_reference else "Create an original fictional adult character; no reference image is supplied."
-                prompt=f"Create a vertical 9:16 short social video, approximately {duration}. {scene} Topic: {topic}. {reference_instruction} High-quality social video, smooth natural motion, no captions, no logos."
+                prompt=f"Create a vertical 9:16 short social video. {scene} Topic: {topic}. {reference_instruction} High-quality social video, smooth natural motion, no captions, no logos. Use a single continuous shot unless the scene specifically requires multiple shots."
                 copy=generate_social_copy(topic or scene,"Reel")
                 caption=copy["caption"]
                 hashtags=copy["hashtags"]
