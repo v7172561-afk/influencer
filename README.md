@@ -1,34 +1,44 @@
 # AI Influencer Studio
 
-Streamlit workspace for a fictional adult AI influencer. Gemini generates reusable portraits and short reference-led videos; a private Hugging Face Storage Bucket stores media; Instagram publishing and insights are available after Meta setup.
+Streamlit creator workspace with Google OIDC sign-in and Instagram Login OAuth. Each signed-in user has a separate SQLite database and media directory and connects their own Instagram Creator or Business account. Instagram tokens are encrypted at rest. There is no shared Instagram access token or account ID.
 
 ## Streamlit Secrets
-Add to Streamlit App settings -> Secrets. Never commit real credentials to GitHub.
 
-    GOOGLE_API_KEY = "your-gemini-api-key"
-    HF_ACCESS_KEY = "HFAK..."
-    HF_SECRET_KEY = "your-hugging-face-s3-secret"
-    HF_ENDPOINT = "https://varun20014k.s3.hf.co"
-    HF_BUCKET = "animedubhindi-storage"
-    HF_REGION = "us-east-1"
-    GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
-    GEMINI_VIDEO_MODEL = "gemini-omni-1.1-flash"
+Add these in Streamlit Cloud → App settings → Secrets. Never commit credentials.
 
-Optional Instagram settings:
+```toml
+[auth]
+redirect_uri = "https://YOUR-APP.streamlit.app/oauth2callback"
+cookie_secret = "GENERATE-A-LONG-RANDOM-SECRET"
+client_id = "YOUR-GOOGLE-OIDC-CLIENT-ID"
+client_secret = "YOUR-GOOGLE-OIDC-CLIENT-SECRET"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
 
-    INSTAGRAM_API_BASE_URL = "https://graph.instagram.com"
-    INSTAGRAM_ACCESS_TOKEN = "your-instagram-user-access-token"
-    INSTAGRAM_USER_ID = "your-instagram-professional-account-id"
+GOOGLE_API_KEY = "your-gemini-api-key"
+HF_ACCESS_KEY = "HFAK..."
+HF_SECRET_KEY = "your-hugging-face-s3-secret"
+HF_ENDPOINT = "https://varun20014k.s3.hf.co"
+HF_BUCKET = "animedubhindi-storage"
+HF_REGION = "us-east-1"
+GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
+GEMINI_VIDEO_MODEL = "gemini-omni-1.1-flash"
 
-Hugging Face stores private media; Gemini generates images and videos. No Google Cloud Storage bucket or service-account credential is required by this app. The Hugging Face S3 gateway requires the namespace endpoint, us-east-1, path-style addressing, and checksum settings. Instagram publishing uses a temporary signed URL for private videos; verify Meta can fetch it before relying on publishing.
+INSTAGRAM_APP_ID = "YOUR_META_APP_ID"
+INSTAGRAM_APP_SECRET = "YOUR_META_APP_SECRET"
+INSTAGRAM_REDIRECT_URI = "https://YOUR-APP.streamlit.app"
+TOKEN_ENCRYPTION_KEY = "YOUR_FERNET_KEY"
+```
 
-SQLite is lightweight metadata storage. Streamlit hosted local disk can reset, so use managed PostgreSQL for production. Video generation depends on model availability, account eligibility, quotas and billing. Instagram publishing requires a professional account, Meta app configuration, permissions and a valid token.
+Generate a Fernet key locally:
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
 
-## Run locally
-Python 3.11+: install requirements with `pip install -r requirements.txt`, then run `streamlit run app.py`. Create `.streamlit/secrets.toml` locally from the settings above. Never commit it.
+## Meta configuration
+Add Instagram API with Instagram Login to the Meta app, register the exact Instagram redirect URI, configure required Instagram Login permissions for basic profile access and content publishing, and complete Meta app review/Advanced Access before public launch. Add the Meta app ID and secret to Streamlit Secrets. The OIDC callback and Instagram redirect URI are different.
 
-## References
-- https://huggingface.co/docs/hub/storage-buckets-s3
-- https://ai.google.dev/gemini-api/docs/omni
-- https://ai.google.dev/gemini-api/docs/image-generation
-- https://developers.facebook.com/docs/instagram-platform/
+## Local development
+Install requirements and run `streamlit run app.py`. Register `http://localhost:8501/oauth2callback` as the Google OIDC redirect and `http://localhost:8501` as the Instagram redirect for local testing.
+
+## Production notes
+Per-user separation currently uses a SQLite file and local media directory per user. Streamlit hosted local disk may reset; use managed PostgreSQL and object storage before public launch. Add token refresh/revocation, key rotation, and validate current Meta scopes/endpoints before opening to public users. Gemini generation remains subject to account model access, quota, and billing.
