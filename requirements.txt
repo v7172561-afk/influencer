@@ -1,7 +1,7 @@
 streamlit>=1.42,<2
 requests>=2.32,<3
 Pillow>=10,<12
-google-genai>=1.20,<2
+google-genai>=2.0,<3
 boto3>=1.35,<2
 cryptography>=44,<47
 extra-streamlit-components>=0.1.80,<1
