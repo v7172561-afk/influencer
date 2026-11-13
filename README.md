@@ -1,17 +1,23 @@
 # AI Influencer Studio
 
-Streamlit AI creator workspace with **Instagram Login as the only sign-in method**. Users authorize their own Instagram professional account; the Instagram account ID identifies a separate workspace, database, media folder, and encrypted access token. No Google sign-in is required.
+An open Streamlit AI creator studio. Visitors can open the app and start generating fictional adult AI influencer portraits, model images, and vertical videos without signing in to Google or Instagram. A private browser workspace stores their drafts. Instagram connection is optional and is requested only when the user wants to publish Reels or view account insights.
+
+## Features
+- Create or edit a reusable fictional adult influencer profile.
+- Generate an AI portrait or upload a reference portrait.
+- Generate AI model images from custom prompts.
+- Generate vertical short videos using the saved influencer reference.
+- Generate social captions and hashtags with Gemini.
+- Preview and download generated images; preview generated videos.
+- Keep a content library and review drafts.
+- Optionally connect an Instagram Creator or Business account to publish Reels and retrieve available insights.
+- Per-browser guest workspaces and per-workspace media prefixes in Hugging Face storage.
 
 ## Streamlit Secrets
 
 Add these in Streamlit Cloud → App settings → Secrets. Never commit credentials.
 
 ```toml
-INSTAGRAM_APP_ID = "YOUR_META_APP_ID"
-INSTAGRAM_APP_SECRET = "YOUR_META_APP_SECRET"
-INSTAGRAM_REDIRECT_URI = "https://YOUR-APP.streamlit.app"
-TOKEN_ENCRYPTION_KEY = "YOUR_FERNET_KEY"
-
 GOOGLE_API_KEY = "your-gemini-api-key"
 HF_ACCESS_KEY = "HFAK..."
 HF_SECRET_KEY = "your-hugging-face-s3-secret"
@@ -20,27 +26,37 @@ HF_BUCKET = "animedubhindi-storage"
 HF_REGION = "us-east-1"
 GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
 GEMINI_VIDEO_MODEL = "gemini-omni-1.1-flash"
+GEMINI_TEXT_MODEL = "gemini-2.5-flash"
+
+# Optional: only needed for Instagram publishing and insights
+INSTAGRAM_APP_ID = "YOUR_META_APP_ID"
+INSTAGRAM_APP_SECRET = "YOUR_META_APP_SECRET"
+INSTAGRAM_REDIRECT_URI = "https://YOUR-APP.streamlit.app"
+TOKEN_ENCRYPTION_KEY = "YOUR_FERNET_KEY"
 ```
 
-Generate the token-encryption key locally:
+Generate a Fernet key locally:
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-## Instagram Login setup
-1. In Meta for Developers, add the Instagram API product and configure **Instagram Login**.
-2. Register the exact redirect URI from `INSTAGRAM_REDIRECT_URI` in the Instagram Login settings.
-3. Configure the Instagram Login permissions needed by the features you use, including basic profile access, content publishing, and insights where supported.
-4. Complete Meta App Review and Advanced Access requirements before allowing accounts outside your app roles to use the service.
-5. Copy the Meta App ID and App Secret into Streamlit Secrets.
+## Run locally
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+For local Instagram OAuth testing, set the redirect URI to `http://localhost:8501` and register that exact URI in the Meta app. Instagram is not needed to use image or video generation.
 
-The app redirects users to Instagram to authorize. It validates a one-time OAuth state, exchanges the authorization code, encrypts the long-lived access token, and creates a random browser session cookie. The Instagram account ID maps the user to a separate workspace. The browser cookie contains only a random session identifier, not the Instagram access token.
+## Instagram publishing
+1. Add Instagram API with Instagram Login to your Meta developer app.
+2. Register the exact redirect URI.
+3. Configure required Instagram Login permissions for basic account access, content publishing, and insights where supported.
+4. Complete Meta App Review and Advanced Access before allowing general public users to connect.
+5. Add the four optional Instagram settings above.
 
-## Other services
-Gemini and Hugging Face credentials above remain required for AI generation and media storage. These are app-level service credentials, not user login credentials.
-
-## Local development
-Run `pip install -r requirements.txt` and `streamlit run app.py`. For local Meta testing, set `INSTAGRAM_REDIRECT_URI = "http://localhost:8501"` and register that exact URI in the Meta app.
-
-## Production notes
-This version uses SQLite files and local media directories per Instagram account, plus a shared local SQLite authentication/session database. Streamlit-hosted local disk may reset and is not a robust multi-instance production session store. Before public launch, move session/OAuth state to managed PostgreSQL or Redis and tenant data to managed PostgreSQL/object storage. Add token refresh/revocation, key rotation, monitoring, rate limiting, and verify current Meta OAuth scopes and API requirements. Reels publishing also requires a publicly fetchable HTTPS video URL. Gemini generation remains subject to model access, quotas, and billing.
+## Important limitations before public launch
+- Guest workspace identity is stored in a browser cookie. Clearing cookies or using another browser/device starts a new workspace. This is not a full registered-user account system.
+- Streamlit local disk and SQLite files may reset or are not shared between multiple app instances. Move session state, projects, and generated media metadata to managed persistent storage (e.g. PostgreSQL plus object storage) before production.
+- Instagram OAuth token refresh/revocation and public app review must be fully tested. Publishing requires a publicly reachable video URL; private bucket delivery must be tested end-to-end with Meta.
+- Gemini models, video generation methods, quotas, and billing depend on the Google AI account and model availability. Check the configured model IDs against the models enabled for your API key.
+- The app code has been updated, but end-to-end image/video generation and Instagram publishing still require testing with your actual service credentials and deployed Streamlit app.
