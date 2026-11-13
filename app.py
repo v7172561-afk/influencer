@@ -179,6 +179,24 @@ def generate_portrait(prompt: str) -> bytes:
                 return part.inline_data.data
     raise RuntimeError("The image model returned no image. Check model access and billing.")
 
+def generate_social_copy(topic: str, media_type: str = "Reel") -> dict:
+    from google import genai
+    from google.genai import types
+    key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY")
+    if not key:
+        raise RuntimeError("Add GOOGLE_API_KEY in Streamlit Secrets to generate captions.")
+    client=genai.Client(api_key=key)
+    response=client.models.generate_content(
+        model=setting("GEMINI_TEXT_MODEL","gemini-2.5-flash"),
+        contents=f"Create social media copy for a fictional adult AI influencer. Topic: {topic}. Format: {media_type}. Return concise JSON only with keys title, caption, hashtags. Caption should sound natural and engaging, include a clear hook, and avoid claiming the person is real. Hashtags should be 5-10 relevant hashtags as a space-separated string.",
+        config=types.GenerateContentConfig(response_mime_type="application/json"),
+    )
+    try:
+        result=json.loads(response.text or "{}")
+    except Exception:
+        result={}
+    return {"title":str(result.get("title") or topic[:70]),"caption":str(result.get("caption") or topic),"hashtags":str(result.get("hashtags") or "#AIInfluencer #VirtualCreator #Reels")}
+
 def google_access_token() -> str:
     import google.auth
     from google.auth.transport.requests import Request
@@ -385,6 +403,30 @@ elif page=="My influencer":
     if p.get("reference_uri"): st.caption(f"Cloud reference: {p['reference_uri']}")
 
 elif page=="Create content":
+    st.title("Create with AI")
+    st.caption("Make model images or vertical videos. Your files are saved in your workspace; Instagram is optional.")
+    with st.container(border=True):
+        st.subheader("Generate an AI model image")
+        image_topic=st.text_input("Image idea",placeholder="e.g. luxury streetwear photoshoot in Tokyo",key="image_topic")
+        image_prompt=st.text_area("Image prompt", "Create a high-quality editorial photograph of the same fictional adult AI influencer. Stylish outfit, natural realistic pose, detailed face and hands, premium lighting, clean composition. No text, watermark or logos.",key="image_prompt")
+        image_format=st.selectbox("Image format",["Portrait 4:5","Square 1:1","Story 9:16"],key="image_format")
+        if st.button("Generate model image",type="primary",key="generate_model_image",disabled=not bool(image_topic.strip())):
+            try:
+                full_prompt=f"{image_prompt} Concept: {image_topic}. Subject identity: {p['persona']}. Adult subject age 25 or older. Aspect ratio {image_format}. Keep identity consistent with the saved influencer reference description."
+                with st.spinner("Creating your AI model image…"):
+                    raw=generate_portrait(full_prompt)
+                    pid=save_post(full_prompt,image_topic,"#AIInfluencer #VirtualCreator #AIModel")
+                    path=MEDIA_DIR/f"{pid}.png"
+                    path.write_bytes(raw)
+                    uri=upload_gcs(str(path),f"users/{tenant}/images/{pid}.png")
+                    update_post(pid,status="ready",image_path=str(path),image_uri=uri)
+                st.success("Your model image is ready.")
+                st.image(raw,use_container_width=True)
+                st.download_button("Download image",data=raw,file_name=f"ai-model-{pid}.png",mime="image/png")
+                st.caption("Your image is saved in your content library below.")
+            except Exception as exc:
+                st.error(str(exc))
+    st.divider()
     st.title("Create an Instagram video")
     st.caption("Generate a concept and caption, then create a vertical video using your saved influencer portrait.")
     if not p.get("reference_path") or not Path(p["reference_path"]).exists():
@@ -396,8 +438,9 @@ elif page=="Create content":
         try:
             with st.spinner("Preparing your video job..."):
                 prompt=f"Create a vertical 9:16 Instagram Reel, {duration}. {scene} Topic: {topic}. Use the supplied reference image as the same adult influencer. Keep face, hair, age and identity consistent. High-quality social video, smooth natural motion, no captions, no logos."
-                caption=f"{topic.strip().capitalize() or 'A little inspiration for today'} ✨"
-                hashtags="#AIInfluencer #VirtualCreator #Lifestyle #Reels"
+                copy=generate_social_copy(topic or scene,"Reel")
+                caption=copy["caption"]
+                hashtags=copy["hashtags"]
                 pid=save_post(prompt,caption,hashtags)
                 ref_uri=p.get("reference_uri","")
                 if not ref_uri: ref_uri=upload_gcs(p["reference_path"],f"users/{tenant}/references/influencer_reference.jpg")
@@ -438,17 +481,20 @@ elif page=="Publishing & analytics":
                 st.link_button("Connect Instagram",instagram_auth_url(state),type="primary")
             except Exception as exc: st.error(str(exc))
     items=posts()
-    ready=[x for x in items if x.get("video_path") and Path(x["video_path"]).exists()]
-    if not ready: st.info("Create a video first.")
+    ready=[x for x in items if (x.get("video_path") and Path(x["video_path"]).exists()) or (x.get("image_path") and Path(x["image_path"]).exists())]
+    if not ready: st.info("Create an image or video first.")
     for item in ready:
         with st.container(border=True):
             st.write(f"**{item['created_at'][:10]} · {item['status'].title()}**")
-            st.video(item["video_path"])
+            if item.get("video_path") and Path(item["video_path"]).exists():
+                st.video(item["video_path"])
+            elif item.get("image_path") and Path(item["image_path"]).exists():
+                st.image(item["image_path"],use_container_width=True)
             caption=st.text_area("Caption",item["caption"],key=f"cap_{item['id']}")
             hashtags=st.text_input("Hashtags",item["hashtags"],key=f"hash_{item['id']}")
             if st.button("Save caption",key=f"save_{item['id']}"):
                 update_post(item["id"],caption=caption,hashtags=hashtags); st.success("Saved.")
-            if item["status"]!="published":
+            if item["status"]!="published" and item.get("video_path") and Path(item["video_path"]).exists():
                 if st.button("Publish Reel now",key=f"publish_{item['id']}",type="primary"):
                     try:
                         update_post(item["id"],caption=caption,hashtags=hashtags)
