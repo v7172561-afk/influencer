@@ -352,7 +352,14 @@ elif st.query_params.get("code"):
     st.query_params.clear()
 connection=get_instagram_connection()
 p=profile()
-st.markdown("<style>.block-container{padding-top:2rem;max-width:1250px}.hero{padding:1.2rem 1.4rem;border:1px solid rgba(128,128,128,.25);border-radius:18px}</style>",unsafe_allow_html=True)
+st.markdown("""<style>
+.block-container{padding-top:1.5rem;max-width:1450px}
+[data-testid="stSidebar"]{border-right:1px solid rgba(128,128,128,.18)}
+.hero{padding:1.8rem 2rem;border:1px solid rgba(128,128,128,.22);border-radius:22px;background:linear-gradient(120deg,rgba(124,92,255,.16),rgba(36,180,170,.08))}
+div[data-testid="stMetric"]{padding:.9rem;border:1px solid rgba(128,128,128,.18);border-radius:16px}
+.stButton>button,.stLinkButton>a{border-radius:12px;font-weight:600}
+div[data-testid="stVerticalBlockBorderWrapper"]{border-radius:16px}
+</style>""",unsafe_allow_html=True)
 with st.sidebar:
     st.title("✨ Influencer Studio")
     page=st.radio("Studio",["Dashboard","Create content","My influencer","Publishing & analytics","Setup"])
@@ -364,7 +371,7 @@ with st.sidebar:
 
 if page=="Dashboard":
     st.title("Your creator studio")
-    st.markdown(f"<div class='hero'><h2>Welcome back</h2><p>Build consistent short-form content for <b>{p['name']}</b>.</p></div>",unsafe_allow_html=True)
+    st.markdown(f"<div class='hero'><h1>✨ Your AI Creator Studio</h1><p>Create a virtual influencer, generate model images and vertical videos, then publish when you are ready.</p><b>Creator: {p['name']}</b></div>",unsafe_allow_html=True)
     items=posts()
     c1,c2,c3,c4=st.columns(4)
     c1.metric("Total drafts",len(items)); c2.metric("Videos ready",sum(bool(x["video_uri"] or x["video_path"]) for x in items)); c3.metric("Published",sum(x["status"]=="published" for x in items)); c4.metric("Needs review",sum(x["status"] in ("draft","ready","failed") for x in items))
@@ -427,7 +434,8 @@ elif page=="Create content":
                 full_prompt=f"{image_prompt} Concept: {image_topic}. Subject identity: {p['persona']}. Adult subject age 25 or older. Aspect ratio {image_format}. Keep identity consistent with the saved influencer reference description."
                 with st.spinner("Creating your AI model image…"):
                     raw=generate_portrait(full_prompt, {"Portrait 4:5":"4:5","Square 1:1":"1:1","Story 9:16":"9:16"}[image_format])
-                    pid=save_post(full_prompt,image_topic,"#AIInfluencer #VirtualCreator #AIModel")
+                    copy=generate_social_copy(image_topic,"AI model image")
+                    pid=save_post(full_prompt,copy["caption"],copy["hashtags"])
                     path=MEDIA_DIR/f"{pid}.png"
                     path.write_bytes(raw)
                     uri=upload_gcs(str(path),f"users/{tenant}/images/{pid}.png")
@@ -462,8 +470,9 @@ elif page=="Create content":
                 local=MEDIA_DIR/f"{pid}.mp4"; local.write_bytes(video_bytes)
                 video_uri=upload_gcs(str(local),f"users/{tenant}/videos/{pid}.mp4")
                 update_post(pid,status="ready",video_path=str(local),video_uri=video_uri)
-            st.success("Your video is ready. Review it under Publishing & analytics.")
+            st.success("Your video is ready.")
             st.video(str(local))
+            st.download_button("Download video",data=video_bytes,file_name=f"ai-reel-{pid}.mp4",mime="video/mp4")
         except Exception as e:
             if "pid" in locals(): update_post(pid,status="failed",error=str(e))
             st.error(str(e))
@@ -507,19 +516,8 @@ elif page=="Publishing & analytics":
             hashtags=st.text_input("Hashtags",item["hashtags"],key=f"hash_{item['id']}")
             if st.button("Save caption",key=f"save_{item['id']}"):
                 update_post(item["id"],caption=caption,hashtags=hashtags); st.success("Saved.")
-            if item["status"]!="published" and item.get("video_path") and Path(item["video_path"]).exists():
-                if not connection:
-                    st.info("Connect Instagram above when you are ready to publish this Reel.")
-                if st.button("Publish Reel now",key=f"publish_{item['id']}",type="primary",disabled=not bool(connection)):
-                    try:
-                        update_post(item["id"],caption=caption,hashtags=hashtags)
-                        mid=publish_reel({**item,"caption":caption,"hashtags":hashtags})
-                        update_post(item["id"],status="published",ig_media_id=mid,error="")
-                        st.success(f"Published to Instagram. Media ID: {mid}"); st.rerun()
-                    except Exception as e:
-                        update_post(item["id"],error=str(e)); st.error(str(e))
-            else:
-                st.success(f"Published · Instagram media ID {item['ig_media_id']}")
+            if item["status"]=="published":
+                st.success(f"Published · Instagram media ID {item.get('ig_media_id') or 'available'}")
                 if st.button("Refresh insights",key=f"insights_{item['id']}"):
                     try:
                         vals=fetch_insights(item["ig_media_id"])
@@ -531,6 +529,19 @@ elif page=="Publishing & analytics":
                     cols=st.columns(5)
                     for col,label,key in zip(cols,["Views","Reach","Likes","Comments","Shares"],["views","reach","likes","comments","shares"]): col.metric(label,m[key])
                     st.metric("Saves",m["saves"])
+            elif item.get("video_path") and Path(item["video_path"]).exists():
+                if not connection:
+                    st.info("Connect Instagram above when you are ready to publish this Reel.")
+                if st.button("Publish Reel now",key=f"publish_{item['id']}",type="primary",disabled=not bool(connection)):
+                    try:
+                        update_post(item["id"],caption=caption,hashtags=hashtags)
+                        mid=publish_reel({**item,"caption":caption,"hashtags":hashtags})
+                        update_post(item["id"],status="published",ig_media_id=mid,error="")
+                        st.success(f"Published to Instagram. Media ID: {mid}"); st.rerun()
+                    except Exception as e:
+                        update_post(item["id"],error=str(e)); st.error(str(e))
+            elif item.get("image_path") and Path(item["image_path"]).exists():
+                st.caption("Images can be downloaded and used in your social posts. Reel publishing is available for videos.")
 
 elif page=="Setup":
     st.title("Connect your services")
