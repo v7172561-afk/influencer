@@ -10,7 +10,8 @@ An open Streamlit AI creator studio. Visitors can open the app and start generat
 - Generate social captions and hashtags with Gemini.
 - Preview and download generated images; preview generated videos.
 - Keep a content library and review drafts.
-- Optionally connect an Instagram Creator or Business account to publish Reels and retrieve available insights.
+- Optionally configure your own Meta Instagram app credentials in Setup, connect an Instagram Creator or Business account, publish Reels and retrieve available insights.
+- A built-in **How to use** guide explains the complete workflow with examples and setup instructions.
 - Per-browser guest workspaces and per-workspace media prefixes in Hugging Face storage.
 
 ## Streamlit Secrets
@@ -63,8 +64,13 @@ For local Instagram OAuth testing, set the redirect URI to `http://localhost:850
 
 ## Visitor API key settings
 
-The Setup page lets each visitor enter their own Gemini API key and optional Hugging Face S3 access/secret keys. Keys are masked in the form and stored in that visitor's Streamlit session memory, overriding app-owner defaults for that session. Visitors can inspect whether the app owner has configured service credentials and remove their own keys.
+The Setup page lets each visitor enter their own Gemini API key, optional Hugging Face S3 access/secret keys, and Instagram Meta App ID, App Secret and Redirect URI. Keys are masked in the form and stored in that visitor's Streamlit session memory, overriding app-owner defaults for that session. Visitors can inspect whether the app owner has configured service credentials and remove their own keys.
 
 These visitor-entered keys are not stored in GitHub or a shared database, but this is session-only storage: keys can be lost when the Streamlit session expires, reconnects, or the app restarts. Do not describe this as permanent encrypted storage. Before a public production launch, use authenticated user accounts and encrypted per-user secrets in a managed secret store.
 
-Instagram passwords and raw personal access tokens are not accepted in the form. Visitors connect their own Instagram Creator/Business account using the Instagram OAuth flow. The website operator must configure the Meta App ID, App Secret, redirect URI and token encryption key in the app's private deployment secrets.
+Instagram passwords and raw personal access tokens are not accepted in the form. Visitors may supply their own Meta App ID, App Secret and Redirect URI in Setup; those credentials are kept in that visitor's Streamlit session memory and are not saved in GitHub or a shared database. The exact redirect URI must also be registered in the Meta developer app. Visitors then connect their own Instagram Creator/Business account using OAuth. For a public production service, the operator should use managed persistent storage and a dedicated secure secret-management design rather than session-only visitor credentials.
+
+
+## Website guide
+
+The sidebar's **How to use** page explains the creator workflow: service setup, influencer profile and reference portrait, AI model image generation, vertical video generation, captions and hashtags, content library, optional Instagram publishing, and the currently available Instagram media insights. It includes example prompts and clearly distinguishes supported insights from features that are not currently implemented.
