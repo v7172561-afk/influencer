@@ -200,7 +200,7 @@ def generate_social_copy(topic: str, media_type: str = "Reel") -> dict:
         raise RuntimeError("Add GOOGLE_API_KEY in Streamlit Secrets to generate captions.")
     client=genai.Client(api_key=key)
     response=client.models.generate_content(
-        model=setting("GEMINI_TEXT_MODEL","gemini-2.5-flash"),
+        model=setting("GEMINI_TEXT_MODEL","gemini-3.1-flash"),
         contents=f"Create social media copy for a fictional adult AI influencer. Topic: {topic}. Format: {media_type}. Return concise JSON only with keys title, caption, hashtags. Caption should sound natural and engaging, include a clear hook, and avoid claiming the person is real. Hashtags should be 5-10 relevant hashtags as a space-separated string.",
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
@@ -237,14 +237,14 @@ def generate_video(prompt: str, reference_uri: str = "", local_reference_path: s
             {"type":"image","data":image_b64,"mime_type":"image/jpeg"},
             {"type":"text","text":prompt+" The person in <IMAGE_REF_0> is the same fictional adult influencer. Preserve her facial identity, hairstyle and overall appearance while animating the described scene."},
         ]
-        task="reference_to_video"
+        task="image_to_video"
     else:
         input_payload=prompt+" Create an original vertical short video featuring fictional adult characters."
         task="text_to_video"
     interaction=client.interactions.create(
         model=setting("GEMINI_VIDEO_MODEL","gemini-omni-1.1-flash"),
         input=input_payload,
-        response_format={"type":"video","aspect_ratio":"9:16","duration":"8s"},
+        response_format={"type":"video","aspect_ratio":"9:16"},
         generation_config={"video_config":{"task":task}},
     )
     video=getattr(interaction,"output_video",None)
