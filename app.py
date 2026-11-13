@@ -204,31 +204,37 @@ def google_access_token() -> str:
     credentials.refresh(Request())
     return credentials.token
 
-def generate_video(prompt: str, reference_uri: str) -> bytes:
-    if not reference_uri.startswith("hf://"):
-        raise RuntimeError("Save the reference portrait to your Hugging Face bucket first.")
-    local_ref=MEDIA_DIR/"video_reference_source"
-    download_gcs(reference_uri,str(local_ref))
-    # Normalize PNG/JPEG uploads to a real JPEG before passing the MIME type to Gemini.
-    with Image.open(local_ref) as source:
-        image_buffer=BytesIO()
-        source.convert("RGB").save(image_buffer,format="JPEG",quality=95)
-        image_bytes=image_buffer.getvalue()
+def generate_video(prompt: str, reference_uri: str = "") -> bytes:
     client=__import__("google.genai",fromlist=["Client"]).Client(api_key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
-    image_b64=base64.b64encode(image_bytes).decode("ascii")
+    input_items=[]
+    if reference_uri:
+        if not reference_uri.startswith("hf://"):
+            raise RuntimeError("The saved influencer reference is not in the configured Hugging Face bucket.")
+        local_ref=MEDIA_DIR/"video_reference_source"
+        download_gcs(reference_uri,str(local_ref))
+        with Image.open(local_ref) as source:
+            image_buffer=BytesIO()
+            source.convert("RGB").save(image_buffer,format="JPEG",quality=95)
+            image_bytes=image_buffer.getvalue()
+        image_b64=base64.b64encode(image_bytes).decode("ascii")
+        input_items=[
+            {"type":"image","data":image_b64,"mime_type":"image/jpeg"},
+            {"type":"text","text":prompt+" The person in <IMAGE_REF_0> is the same fictional adult influencer. Use this image as a visual identity reference, not necessarily as the first frame. Preserve facial identity, hairstyle and overall appearance."},
+        ]
+        task="reference_to_video"
+    else:
+        input_items=[{"type":"text","text":prompt+" Create an original vertical 9:16 social video. The subject must be an adult fictional character."}]
+        task="text_to_video"
     interaction=client.interactions.create(
         model=setting("GEMINI_VIDEO_MODEL","gemini-omni-1.1-flash"),
-        input=[
-            {"type":"image","data":image_b64,"mime_type":"image/jpeg"},
-            {"type":"text","text":prompt+" Use the supplied image as a reference for the same fictional adult influencer, not as the literal first frame. Preserve her facial identity, hairstyle and overall appearance. Create natural realistic movement and a polished vertical social video. 9:16 aspect ratio."},
-        ],
-        response_format={"type":"video","aspect_ratio":"9:16"},
-        generation_config={"video_config":{"task":"image_to_video"}},
+        input=input_items,
+        response_format={"type":"video","aspect_ratio":"9:16","resolution":"720p"},
+        generation_config={"video_config":{"task":task}},
     )
     video=getattr(interaction,"output_video",None)
     data=getattr(video,"data",None) if video else None
     if not data:
-        raise RuntimeError("Gemini returned no video. Confirm gemini-omni-flash-preview is enabled for your API key and check quota/billing.")
+        raise RuntimeError("Gemini returned no video. Confirm gemini-omni-1.1-flash is enabled for your API key and check quota/billing.")
     return base64.b64decode(data)
 
 def token_cipher():
@@ -435,12 +441,13 @@ elif page=="Create content":
     st.divider()
     st.title("Create an Instagram video")
     st.caption("Generate a concept and caption, then create a vertical video using your saved influencer portrait.")
-    if not p.get("reference_path") or not Path(p["reference_path"]).exists():
-        st.warning("Create or upload your influencer portrait first in My influencer.")
+    has_reference=bool(p.get("reference_path") and Path(p["reference_path"]).exists())
+    if not has_reference:
+        st.info("No saved portrait yet? You can still create a video from text. Save a model portrait first if you want to use that character as a visual reference.")
     topic=st.text_input("Video idea",placeholder="e.g. 3 easy summer outfit ideas")
     scene=st.text_area("What should happen in the video?", "The influencer smiles at the camera, walks naturally toward the camera, and shows the outfit in a bright modern studio. Natural motion, realistic hands, no text overlays.")
     duration=st.select_slider("Video length",options=["5 seconds","8 seconds","10 seconds","12 seconds","15 seconds"],value="8 seconds")
-    if st.button("Create video",type="primary",disabled=not (p.get("reference_path") and Path(p["reference_path"]).exists())):
+    if st.button("Create video",type="primary"):
         try:
             with st.spinner("Preparing your video job..."):
                 prompt=f"Create a vertical 9:16 Instagram Reel, {duration}. {scene} Topic: {topic}. Use the supplied reference image as the same adult influencer. Keep face, hair, age and identity consistent. High-quality social video, smooth natural motion, no captions, no logos."
@@ -448,9 +455,9 @@ elif page=="Create content":
                 caption=copy["caption"]
                 hashtags=copy["hashtags"]
                 pid=save_post(prompt,caption,hashtags)
-                ref_uri=p.get("reference_uri","")
-                if not ref_uri: ref_uri=upload_gcs(p["reference_path"],f"users/{tenant}/references/influencer_reference.jpg")
-                if not ref_uri: raise RuntimeError("Could not save the reference portrait to Hugging Face. Check your HF bucket secrets and permissions.")
+                ref_uri=p.get("reference_uri","") if has_reference else ""
+                if has_reference and not ref_uri:
+                    ref_uri=upload_gcs(p["reference_path"],f"users/{tenant}/references/influencer_reference.jpg")
                 video_bytes=generate_video(prompt,ref_uri)
                 local=MEDIA_DIR/f"{pid}.mp4"; local.write_bytes(video_bytes)
                 video_uri=upload_gcs(str(local),f"users/{tenant}/videos/{pid}.mp4")
