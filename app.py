@@ -244,7 +244,7 @@ def generate_video(prompt: str, reference_uri: str = "", local_reference_path: s
     interaction=client.interactions.create(
         model=setting("GEMINI_VIDEO_MODEL","gemini-omni-1.1-flash"),
         input=input_payload,
-        response_format={"type":"video","aspect_ratio":"9:16"},
+        response_format={"type":"video","aspect_ratio":"9:16","duration":"8s"},
         generation_config={"video_config":{"task":task}},
     )
     video=getattr(interaction,"output_video",None)
