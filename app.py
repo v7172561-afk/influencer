@@ -162,7 +162,7 @@ def download_gcs(uri: str, destination: str):
     bucket_name, key = uri.removeprefix("hf://").split("/", 1)
     hf_client().download_file(bucket_name, key, destination)
 
-def generate_portrait(prompt: str) -> bytes:
+def generate_portrait(prompt: str, aspect_ratio: str = "4:5") -> bytes:
     from google import genai
     from google.genai import types
     key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY")
@@ -171,7 +171,7 @@ def generate_portrait(prompt: str) -> bytes:
     response=client.models.generate_content(
         model=setting("GEMINI_IMAGE_MODEL","gemini-3.1-flash-image"),
         contents=prompt,
-        config=types.GenerateContentConfig(response_modalities=["IMAGE","TEXT"]),
+        config=types.GenerateContentConfig(response_modalities=["IMAGE","TEXT"],image_config=types.ImageConfig(aspect_ratio=aspect_ratio)),
     )
     for candidate in response.candidates or []:
         for part in candidate.content.parts or []:
@@ -219,10 +219,11 @@ def generate_video(prompt: str, reference_uri: str) -> bytes:
     interaction=client.interactions.create(
         model=setting("GEMINI_VIDEO_MODEL","gemini-omni-1.1-flash"),
         input=[
-            {"type":"text","text":prompt+" Use the supplied image as a reference for the same fictional adult influencer, not as the literal first frame. Preserve her facial identity, hairstyle and overall appearance. Create natural realistic movement and a polished vertical social video. 9:16 aspect ratio."},
             {"type":"image","data":image_b64,"mime_type":"image/jpeg"},
+            {"type":"text","text":prompt+" Use the supplied image as a reference for the same fictional adult influencer, not as the literal first frame. Preserve her facial identity, hairstyle and overall appearance. Create natural realistic movement and a polished vertical social video. 9:16 aspect ratio."},
         ],
         response_format={"type":"video","aspect_ratio":"9:16"},
+        generation_config={"video_config":{"task":"image_to_video"}},
     )
     video=getattr(interaction,"output_video",None)
     data=getattr(video,"data",None) if video else None
@@ -419,7 +420,7 @@ elif page=="Create content":
             try:
                 full_prompt=f"{image_prompt} Concept: {image_topic}. Subject identity: {p['persona']}. Adult subject age 25 or older. Aspect ratio {image_format}. Keep identity consistent with the saved influencer reference description."
                 with st.spinner("Creating your AI model image…"):
-                    raw=generate_portrait(full_prompt)
+                    raw=generate_portrait(full_prompt, {"Portrait 4:5":"4:5","Square 1:1":"1:1","Story 9:16":"9:16"}[image_format])
                     pid=save_post(full_prompt,image_topic,"#AIInfluencer #VirtualCreator #AIModel")
                     path=MEDIA_DIR/f"{pid}.png"
                     path.write_bytes(raw)
