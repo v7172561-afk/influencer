@@ -495,7 +495,9 @@ elif page=="Publishing & analytics":
             if st.button("Save caption",key=f"save_{item['id']}"):
                 update_post(item["id"],caption=caption,hashtags=hashtags); st.success("Saved.")
             if item["status"]!="published" and item.get("video_path") and Path(item["video_path"]).exists():
-                if st.button("Publish Reel now",key=f"publish_{item['id']}",type="primary"):
+                if not connection:
+                    st.info("Connect Instagram above when you are ready to publish this Reel.")
+                if st.button("Publish Reel now",key=f"publish_{item['id']}",type="primary",disabled=not bool(connection)):
                     try:
                         update_post(item["id"],caption=caption,hashtags=hashtags)
                         mid=publish_reel({**item,"caption":caption,"hashtags":hashtags})
@@ -530,13 +532,13 @@ HF_REGION = "us-east-1"
 GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
 GEMINI_VIDEO_MODEL = "gemini-omni-1.1-flash"''',language="toml")
     st.markdown("Gemini generates media using your API key. Hugging Face Storage Bucket stores portraits and videos privately using S3-compatible credentials. No Google Cloud Storage bucket is used.")
-    st.subheader("Instagram-only sign-in")
+    st.subheader("Optional Instagram publishing")
     st.code("""INSTAGRAM_APP_ID = "YOUR_META_APP_ID"
 INSTAGRAM_APP_SECRET = "YOUR_META_APP_SECRET"
 INSTAGRAM_REDIRECT_URI = "https://YOUR-APP.streamlit.app"
 TOKEN_ENCRYPTION_KEY = "YOUR_FERNET_KEY"
 """,language="toml")
-    st.markdown("Use Instagram Login as the only sign-in method. Register the exact redirect URI in Meta's Instagram Login settings and complete any required App Review / Advanced Access. Reels publishing requires a publicly reachable HTTPS video URL. The app generates a temporary signed HTTPS URL for each private video when publishing. Test Meta can fetch it before relying on publishing.")
+    st.markdown("Instagram is optional for image and video generation. Connect a Creator or Business account only when you want to publish Reels or retrieve insights. Register the exact redirect URI in Meta's Instagram Login settings and complete required App Review / Advanced Access.")
     st.subheader("Readiness")
     checks=[("Gemini API key",bool(setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))),("Hugging Face S3 key",bool(setting("HF_ACCESS_KEY"))),("Hugging Face S3 secret",bool(setting("HF_SECRET_KEY"))),("Instagram app ID",bool(setting("INSTAGRAM_APP_ID"))),("Instagram app secret",bool(setting("INSTAGRAM_APP_SECRET"))),("Instagram redirect URI",bool(setting("INSTAGRAM_REDIRECT_URI"))),("Token encryption key",bool(setting("TOKEN_ENCRYPTION_KEY"))),("Instagram sign-in active",bool(get_instagram_connection()))]
     for label,ok in checks: st.write(("✅ " if ok else "⬜ ")+label)
