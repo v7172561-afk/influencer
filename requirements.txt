@@ -1,8 +1,6 @@
-streamlit>=1.40,<2.0
-groq>=0.11,<1.0
-SQLAlchemy>=2.0,<3.0
-psycopg[binary]>=3.2,<4.0
-supabase>=2.10,<3.0
-requests>=2.32,<3.0
-Pillow>=10.0,<13.0
-python-dotenv>=1.0,<2.0
+streamlit>=1.41,<2
+requests>=2.32,<3
+Pillow>=10,<12
+google-genai>=1.20,<2
+google-cloud-storage>=2.18,<4
+google-auth>=2.35,<3

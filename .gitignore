@@ -1,9 +1,6 @@
 .env
 .streamlit/secrets.toml
-__pycache__/
-*.py[cod]
 .venv/
-venv/
-data/*
-!data/.gitkeep
-*.db
+__pycache__/
+*.pyc
+data/
