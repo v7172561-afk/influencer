@@ -252,7 +252,7 @@ elif page=="Create content":
                 pid=save_post(prompt,caption,hashtags)
                 ref_uri=p.get("reference_uri","")
                 if not ref_uri: ref_uri=upload_gcs(p["reference_path"],"references/influencer_reference.jpg")
-                if not ref_uri: raise RuntimeError("Set GOOGLE_CLOUD_STORAGE_BUCKET and configure Google Cloud credentials to use image-referenced video generation.")
+                if not ref_uri: raise RuntimeError("Could not save the reference portrait to Hugging Face. Check your HF bucket secrets and permissions.")
                 video_bytes=generate_video(prompt,ref_uri)
                 local=MEDIA_DIR/f"{pid}.mp4"; local.write_bytes(video_bytes)
                 video_uri=upload_gcs(str(local),f"videos/{pid}.mp4")
@@ -309,17 +309,20 @@ elif page=="Setup":
     st.title("Connect your services")
     st.write("Add credentials in Streamlit Cloud → App → Settings → Secrets, or in a local .streamlit/secrets.toml file. Never paste private keys into GitHub.")
     st.subheader("Gemini generation and private Hugging Face storage")
-    st.code('''GOOGLE_CLOUD_PROJECT = "your-project-id"
-GOOGLE_CLOUD_STORAGE_BUCKET = "your-public-or-accessible-bucket"
-GEMINI_API_KEY = "your-gemini-api-key"
+    st.code('''GOOGLE_API_KEY = "your-gemini-api-key"
+HF_ACCESS_KEY = "HFAK..."
+HF_SECRET_KEY = "your-hugging-face-s3-secret"
+HF_ENDPOINT = "https://varun20014k.s3.hf.co"
+HF_BUCKET = "animedubhindi-storage"
+HF_REGION = "us-east-1"
 GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
-GEMINI_VIDEO_MODEL = "gemini-omni-1.2-flash"''',language="toml")
+GEMINI_VIDEO_MODEL = "gemini-omni-1.1-flash"''',language="toml")
     st.markdown("Gemini generates media using your API key. Hugging Face Storage Bucket stores portraits and videos privately using S3-compatible credentials. No Google Cloud Storage bucket is used.")
     st.subheader("Instagram")
     st.code('''INSTAGRAM_API_BASE_URL = "https://graph.instagram.com"
 INSTAGRAM_ACCESS_TOKEN = "your-instagram-user-access-token"
 INSTAGRAM_USER_ID = "your-instagram-professional-account-id"''',language="toml")
-    st.markdown("Use an Instagram Creator or Business account and complete Meta's Instagram API login, permissions, and app review requirements. Reels publishing requires a publicly reachable HTTPS video URL. If your bucket is private, configure a public delivery layer or CDN before publishing.")
+    st.markdown("Use an Instagram Creator or Business account and complete Meta's Instagram API login, permissions, and app review requirements. Reels publishing requires a publicly reachable HTTPS video URL. The app generates a temporary signed HTTPS URL for each private video when publishing. Test Meta can fetch it before relying on publishing.")
     st.subheader("Readiness")
     checks=[("Gemini API key",bool(setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))),("Hugging Face S3 key",bool(setting("HF_ACCESS_KEY"))),("Hugging Face S3 secret",bool(setting("HF_SECRET_KEY"))),("Instagram token",bool(setting("INSTAGRAM_ACCESS_TOKEN"))),("Instagram account ID",bool(setting("INSTAGRAM_USER_ID")))]
     for label,ok in checks: st.write(("✅ " if ok else "⬜ ")+label)
