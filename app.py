@@ -15,11 +15,6 @@ from io import BytesIO
 from cryptography.fernet import Fernet
 
 APP_DIR = Path(__file__).parent
-DATA_DIR = APP_DIR / "data"
-MEDIA_DIR = DATA_DIR / "media"
-DATA_DIR.mkdir(exist_ok=True)
-MEDIA_DIR.mkdir(exist_ok=True)
-DB = DATA_DIR / "studio.db"
 
 st.set_page_config(page_title="Influencer Studio", page_icon="✨", layout="wide")
 
@@ -289,7 +284,7 @@ elif page=="My influencer":
                 with st.spinner("Generating portrait..."):
                     raw=generate_portrait(portrait_prompt)
                     path=MEDIA_DIR/"influencer_reference.png"; path.write_bytes(raw)
-                    uri=upload_gcs(str(path),"references/influencer_reference.png")
+                    uri=upload_gcs(str(path),f"users/{tenant}/references/influencer_reference.png")
                     save_profile(name,niche,bio,persona,str(path),uri or "")
                 st.success("Portrait saved as your reusable identity reference."); st.rerun()
             except Exception as e: st.error(str(e))
@@ -299,7 +294,7 @@ elif page=="My influencer":
             try:
                 img=Image.open(BytesIO(uploaded.getvalue())).convert("RGB")
                 path=MEDIA_DIR/"influencer_reference.jpg"; img.save(path,quality=92)
-                uri=upload_gcs(str(path),"references/influencer_reference.jpg")
+                uri=upload_gcs(str(path),f"users/{tenant}/references/influencer_reference.jpg")
                 save_profile(name,niche,bio,persona,str(path),uri or "")
                 st.success("Reference portrait saved."); st.rerun()
             except Exception as e: st.error(str(e))
@@ -321,11 +316,11 @@ elif page=="Create content":
                 hashtags="#AIInfluencer #VirtualCreator #Lifestyle #Reels"
                 pid=save_post(prompt,caption,hashtags)
                 ref_uri=p.get("reference_uri","")
-                if not ref_uri: ref_uri=upload_gcs(p["reference_path"],"references/influencer_reference.jpg")
+                if not ref_uri: ref_uri=upload_gcs(p["reference_path"],f"users/{tenant}/references/influencer_reference.jpg")
                 if not ref_uri: raise RuntimeError("Could not save the reference portrait to Hugging Face. Check your HF bucket secrets and permissions.")
                 video_bytes=generate_video(prompt,ref_uri)
                 local=MEDIA_DIR/f"{pid}.mp4"; local.write_bytes(video_bytes)
-                video_uri=upload_gcs(str(local),f"videos/{pid}.mp4")
+                video_uri=upload_gcs(str(local),f"users/{tenant}/videos/{pid}.mp4")
                 update_post(pid,status="ready",video_path=str(local),video_uri=video_uri)
             st.success("Your video is ready. Review it under Publishing & analytics.")
             st.video(str(local))
