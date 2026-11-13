@@ -37,6 +37,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS posts(id TEXT PRIMARY KEY, created_at TEXT, prompt TEXT, caption TEXT, hashtags TEXT, status TEXT, image_path TEXT, image_uri TEXT, video_path TEXT, video_uri TEXT, ig_media_id TEXT, scheduled_at TEXT, error TEXT);
         CREATE TABLE IF NOT EXISTS metrics(id INTEGER PRIMARY KEY AUTOINCREMENT, post_id TEXT, fetched_at TEXT, views INTEGER DEFAULT 0, reach INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, saves INTEGER DEFAULT 0);
         CREATE TABLE IF NOT EXISTS instagram_connections(id INTEGER PRIMARY KEY CHECK(id=1), instagram_user_id TEXT, username TEXT, encrypted_token TEXT, expires_at TEXT, connected_at TEXT);
+        CREATE TABLE IF NOT EXISTS instagram_oauth_states(state_hash TEXT PRIMARY KEY, created_at REAL NOT NULL);
         """)
         c.execute("INSERT OR IGNORE INTO profile(id,name,niche,bio,persona,created_at) VALUES(1,'Ava','Lifestyle & fashion','A virtual creator sharing everyday style and inspiration.','Fictional adult woman, 25+, warm confident personality, natural expressions.',?)",(now(),))
 
@@ -161,7 +162,10 @@ def save_instagram_connection(user_id,username,access_token,expires_in):
 def instagram_auth_url():
     app_id=setting("INSTAGRAM_APP_ID"); redirect=setting("INSTAGRAM_REDIRECT_URI")
     if not app_id or not redirect: raise RuntimeError("Set INSTAGRAM_APP_ID and INSTAGRAM_REDIRECT_URI in Streamlit Secrets.")
-    state=secrets.token_urlsafe(32); st.session_state["ig_oauth_state"]=state
+    state=secrets.token_urlsafe(32)
+    with db() as c:
+        c.execute("DELETE FROM instagram_oauth_states WHERE created_at < ?",(time.time()-600,))
+        c.execute("INSERT INTO instagram_oauth_states(state_hash,created_at) VALUES(?,?)",(hashlib.sha256(state.encode()).hexdigest(),time.time()))
     params={"client_id":app_id,"redirect_uri":redirect,"response_type":"code","scope":"instagram_business_basic,instagram_business_content_publish,instagram_business_manage_insights","state":state,"enable_fb_login":"0"}
     return "https://www.instagram.com/oauth/authorize?"+urllib.parse.urlencode(params)
 
@@ -230,13 +234,17 @@ MEDIA_DIR=DATA_DIR/"media"
 DATA_DIR.mkdir(parents=True,exist_ok=True); MEDIA_DIR.mkdir(parents=True,exist_ok=True)
 DB=DATA_DIR/"studio.db"
 if st.query_params.get("code"):
-    returned=str(st.query_params.get("state","")); expected=str(st.session_state.get("ig_oauth_state",""))
-    if not expected or not secrets.compare_digest(returned,expected):
-        st.error("Instagram authorization state mismatch. Please reconnect.")
+    returned=str(st.query_params.get("state",""))
+    state_hash=hashlib.sha256(returned.encode()).hexdigest()
+    with db() as c:
+        valid=c.execute("SELECT 1 FROM instagram_oauth_states WHERE state_hash=? AND created_at>=?",(state_hash,time.time()-600)).fetchone()
+        c.execute("DELETE FROM instagram_oauth_states WHERE state_hash=?",(state_hash,))
+    if not returned or not valid:
+        st.error("Instagram authorization state expired or did not match. Please reconnect.")
     else:
         try:
             finish_instagram_auth(str(st.query_params.get("code")))
-            st.session_state.pop("ig_oauth_state",None); st.query_params.clear()
+            st.query_params.clear()
             st.success("Instagram connected.")
         except Exception as exc: st.error(f"Instagram connection failed: {exc}")
 init_db()
