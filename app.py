@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import boto3
+from botocore.config import Config
+import base64
 import streamlit as st
 from PIL import Image
 from io import BytesIO
@@ -64,25 +67,41 @@ def update_post(pid, **fields):
     sql=", ".join(f"{k}=?" for k in fields)
     with db() as c:c.execute(f"UPDATE posts SET {sql} WHERE id=?",(*fields.values(),pid))
 
+def hf_client():
+    access = setting("HF_ACCESS_KEY")
+    secret_key = setting("HF_SECRET_KEY")
+    if not access or not secret_key:
+        raise RuntimeError("Add HF_ACCESS_KEY and HF_SECRET_KEY in Streamlit Secrets.")
+    return boto3.client(
+        "s3",
+        endpoint_url=setting("HF_ENDPOINT", "https://varun20014k.s3.hf.co"),
+        aws_access_key_id=access,
+        aws_secret_access_key=secret_key,
+        config=Config(
+            region_name=setting("HF_REGION", "us-east-1"),
+            s3={"addressing_style": "path"},
+            request_checksum_calculation="when_required",
+            response_checksum_validation="when_required",
+        ),
+    )
+
+def hf_bucket():
+    return setting("HF_BUCKET", "animedubhindi-storage")
+
 def upload_gcs(local_path: str, object_name: str) -> str:
-    bucket_name=setting("GOOGLE_CLOUD_STORAGE_BUCKET")
-    if not bucket_name: return ""
-    from google.cloud import storage
-    client=storage.Client(project=setting("GOOGLE_CLOUD_PROJECT") or None)
-    blob=client.bucket(bucket_name).blob(object_name)
-    blob.upload_from_filename(local_path)
-    return f"gs://{bucket_name}/{object_name}"
+    hf_client().upload_file(local_path, hf_bucket(), object_name)
+    return f"hf://{hf_bucket()}/{object_name}"
 
 def download_gcs(uri: str, destination: str):
-    from google.cloud import storage
-    path=uri.removeprefix("gs://")
-    bucket, name=path.split("/",1)
-    storage.Client(project=setting("GOOGLE_CLOUD_PROJECT") or None).bucket(bucket).blob(name).download_to_filename(destination)
+    if not uri.startswith("hf://"):
+        raise RuntimeError("This media item is not stored in the configured Hugging Face bucket.")
+    bucket_name, key = uri.removeprefix("hf://").split("/", 1)
+    hf_client().download_file(bucket_name, key, destination)
 
 def generate_portrait(prompt: str) -> bytes:
     from google import genai
     from google.genai import types
-    key=setting("GEMINI_API_KEY")
+    key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY")
     if not key: raise RuntimeError("Add GEMINI_API_KEY in Streamlit Secrets.")
     client=genai.Client(api_key=key)
     response=client.models.generate_content(
@@ -103,37 +122,26 @@ def google_access_token() -> str:
     credentials.refresh(Request())
     return credentials.token
 
-def generate_video(prompt: str, reference_uri: str) -> str:
-    project=setting("GOOGLE_CLOUD_PROJECT")
-    if not project: raise RuntimeError("Set GOOGLE_CLOUD_PROJECT in Streamlit Secrets.")
-    if not reference_uri.startswith("gs://"): raise RuntimeError("A GCS reference image is required. Set GOOGLE_CLOUD_STORAGE_BUCKET and upload the portrait.")
-    token=google_access_token()
-    url=f"https://aiplatform.googleapis.com/v1beta1/projects/{project}/locations/global/interactions"
-    body={
-      "model":setting("GEMINI_VIDEO_MODEL","gemini-omni-1.2-flash"),
-      "background":True,
-      "input":[{"type":"text","text":prompt+" Use the supplied portrait as the identity reference. Preserve the same adult influencer's face, hair and defining features."},
-               {"type":"image","uri":reference_uri,"mime_type":"image/jpeg"}],
-      "response_format":[{"type":"video","delivery":"uri","gcs_uri":f"gs://{setting('GOOGLE_CLOUD_STORAGE_BUCKET')}/generated/","aspect_ratio":"9:16","resolution":"720p","duration":"8s"}]
-    }
-    r=requests.post(url,headers={"Authorization":f"Bearer {token}","Content-Type":"application/json"},json=body,timeout=90)
-    r.raise_for_status()
-    interaction=r.json()
-    iid=interaction["id"]
-    poll=f"{url}/{iid}"
-    for _ in range(80):
-        time.sleep(10)
-        result=requests.get(poll,headers={"Authorization":f"Bearer {token}"},timeout=60)
-        result.raise_for_status()
-        data=result.json()
-        if data.get("status")=="completed":
-            for step in data.get("steps",[]):
-                if step.get("type")=="model_output":
-                    for part in step.get("content",[]):
-                        if part.get("type")=="video" and part.get("uri"): return part["uri"]
-            raise RuntimeError("Video completed but no output URI was returned.")
-        if data.get("status") in ("failed","cancelled"): raise RuntimeError(json.dumps(data))
-    raise TimeoutError("Video generation is still processing. Try again later.")
+def generate_video(prompt: str, reference_uri: str) -> bytes:
+    if not reference_uri.startswith("hf://"):
+        raise RuntimeError("Save the reference portrait to your Hugging Face bucket first.")
+    local_ref = MEDIA_DIR / "video_reference"
+    download_gcs(reference_uri, str(local_ref))
+    image_bytes = local_ref.read_bytes()
+    client = __import__("google.genai", fromlist=["Client"]).Client(api_key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
+    image_b64 = base64.b64encode(image_bytes).decode("ascii")
+    interaction = client.interactions.create(
+        model=setting("GEMINI_VIDEO_MODEL", "gemini-omni-1.1-flash"),
+        input=[
+            {"type": "image", "data": image_b64, "mime_type": "image/jpeg"},
+            {"type": "text", "text": prompt + " Use the image as a reference for the same fictional adult influencer. Preserve her identity and do not use it as a literal first frame."},
+        ],
+    )
+    video = getattr(interaction, "output_video", None)
+    data = getattr(video, "data", None) if video else None
+    if not data:
+        raise RuntimeError("Gemini returned no video. Check model access, quota and billing.")
+    return base64.b64decode(data)
 
 def ig_request(method,path,params=None):
     token=setting("INSTAGRAM_ACCESS_TOKEN")
@@ -148,7 +156,10 @@ def publish_reel(post):
     igid=setting("INSTAGRAM_USER_ID")
     if not igid: raise RuntimeError("Add INSTAGRAM_USER_ID in Streamlit Secrets.")
     video_url=post.get("video_uri","")
-    if not video_url.startswith("https://"): raise RuntimeError("Instagram needs a publicly accessible HTTPS video URL. Configure public GCS delivery or a public media CDN.")
+    if video_url.startswith("hf://"):
+        bucket_name, object_key = video_url.removeprefix("hf://").split("/", 1)
+        video_url = hf_client().generate_presigned_url("get_object", Params={"Bucket": bucket_name, "Key": object_key}, ExpiresIn=3600)
+    if not video_url.startswith("https://"): raise RuntimeError("Instagram needs an HTTPS media URL.")
     container=ig_request("POST",f"{igid}/media",{"media_type":"REELS","video_url":video_url,"caption":post["caption"]+"\n\n"+post["hashtags"]})
     cid=container["id"]
     for _ in range(30):
@@ -242,8 +253,9 @@ elif page=="Create content":
                 ref_uri=p.get("reference_uri","")
                 if not ref_uri: ref_uri=upload_gcs(p["reference_path"],"references/influencer_reference.jpg")
                 if not ref_uri: raise RuntimeError("Set GOOGLE_CLOUD_STORAGE_BUCKET and configure Google Cloud credentials to use image-referenced video generation.")
-                video_uri=generate_video(prompt,ref_uri)
-                local=MEDIA_DIR/f"{pid}.mp4"; download_gcs(video_uri,str(local))
+                video_bytes=generate_video(prompt,ref_uri)
+                local=MEDIA_DIR/f"{pid}.mp4"; local.write_bytes(video_bytes)
+                video_uri=upload_gcs(str(local),f"videos/{pid}.mp4")
                 update_post(pid,status="ready",video_path=str(local),video_uri=video_uri)
             st.success("Your video is ready. Review it under Publishing & analytics.")
             st.video(str(local))
@@ -296,19 +308,19 @@ elif page=="Publishing & analytics":
 elif page=="Setup":
     st.title("Connect your services")
     st.write("Add credentials in Streamlit Cloud → App → Settings → Secrets, or in a local .streamlit/secrets.toml file. Never paste private keys into GitHub.")
-    st.subheader("Google Cloud video and storage")
+    st.subheader("Gemini generation and private Hugging Face storage")
     st.code('''GOOGLE_CLOUD_PROJECT = "your-project-id"
 GOOGLE_CLOUD_STORAGE_BUCKET = "your-public-or-accessible-bucket"
 GEMINI_API_KEY = "your-gemini-api-key"
 GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
 GEMINI_VIDEO_MODEL = "gemini-omni-1.2-flash"''',language="toml")
-    st.markdown("Enable Vertex AI and Cloud Storage APIs, configure Application Default Credentials / a service account for the app, grant it Vertex AI User and Storage Object Admin (or narrower equivalent) permissions, and create the bucket. The video model runs through Google Cloud Agent Platform; a Gemini API key alone is not enough.")
+    st.markdown("Gemini generates media using your API key. Hugging Face Storage Bucket stores portraits and videos privately using S3-compatible credentials. No Google Cloud Storage bucket is used.")
     st.subheader("Instagram")
     st.code('''INSTAGRAM_API_BASE_URL = "https://graph.instagram.com"
 INSTAGRAM_ACCESS_TOKEN = "your-instagram-user-access-token"
 INSTAGRAM_USER_ID = "your-instagram-professional-account-id"''',language="toml")
     st.markdown("Use an Instagram Creator or Business account and complete Meta's Instagram API login, permissions, and app review requirements. Reels publishing requires a publicly reachable HTTPS video URL. If your bucket is private, configure a public delivery layer or CDN before publishing.")
     st.subheader("Readiness")
-    checks=[("Gemini API key",bool(setting("GEMINI_API_KEY"))),("Google Cloud project",bool(setting("GOOGLE_CLOUD_PROJECT"))),("Cloud Storage bucket",bool(setting("GOOGLE_CLOUD_STORAGE_BUCKET"))),("Instagram token",bool(setting("INSTAGRAM_ACCESS_TOKEN"))),("Instagram account ID",bool(setting("INSTAGRAM_USER_ID")))]
+    checks=[("Gemini API key",bool(setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))),("Hugging Face S3 key",bool(setting("HF_ACCESS_KEY"))),("Hugging Face S3 secret",bool(setting("HF_SECRET_KEY"))),("Instagram token",bool(setting("INSTAGRAM_ACCESS_TOKEN"))),("Instagram account ID",bool(setting("INSTAGRAM_USER_ID")))]
     for label,ok in checks: st.write(("✅ " if ok else "⬜ ")+label)
     st.warning("This starter stores app records and downloaded media on the app filesystem. For hosted production, move SQLite/media to managed persistent storage and use a secret manager. Do not expose the dashboard publicly without authentication.")
