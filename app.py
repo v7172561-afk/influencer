@@ -273,7 +273,13 @@ def get_instagram_connection():
     with db() as c: row=c.execute("SELECT * FROM instagram_connections WHERE id=1").fetchone()
     if not row: return None
     item=dict(row)
-    item["access_token"]=token_cipher().decrypt(item["encrypted_token"].encode()).decode()
+    try:
+        item["access_token"]=token_cipher().decrypt(item["encrypted_token"].encode()).decode()
+    except Exception:
+        # Visitor-supplied app secrets are session-only; an expired session can make
+        # an old encrypted token unreadable. Do not crash the whole creator studio.
+        with db() as c: c.execute("DELETE FROM instagram_connections WHERE id=1")
+        return None
     return item
 
 def save_instagram_connection(user_id,username,access_token,expires_in):
@@ -631,7 +637,7 @@ elif page=="Publishing & analytics":
 
 elif page=="Setup":
     st.title("Your API keys & connections")
-    st.caption("Add your own Gemini API key and optional Hugging Face storage credentials. Values are masked and kept in this active browser session.")
+    st.caption("Add your own Gemini key, optional Hugging Face storage credentials, and Meta Instagram app credentials. Visitor-entered values stay in this active browser session.")
     app_gemini=bool(setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
     app_hf=bool(setting("HF_ACCESS_KEY") and setting("HF_SECRET_KEY"))
     visitor_secrets=st.session_state.get("visitor_api_secrets",{})
