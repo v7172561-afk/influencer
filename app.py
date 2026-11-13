@@ -479,9 +479,17 @@ elif page=="Create content":
     st.divider()
     st.title("Create an Instagram video")
     st.caption("Generate a concept and caption, then create a vertical video using your saved influencer portrait.")
-    has_reference=bool(p.get("reference_path") and Path(p["reference_path"]).exists())
+    saved_visuals=[x for x in posts() if x.get("image_path") and Path(x["image_path"]).exists()]
+    reference_options={"No reference image (text-to-video)":""}
+    if p.get("reference_path") and Path(p["reference_path"]).exists():
+        reference_options["Saved influencer portrait"]=p["reference_path"]
+    for visual in saved_visuals:
+        reference_options[f"Generated image · {visual['created_at'][:10]} · {visual['id']}"]=visual["image_path"]
+    selected_reference=st.selectbox("Visual reference for video",list(reference_options.keys()))
+    selected_reference_path=reference_options[selected_reference]
+    has_reference=bool(selected_reference_path)
     if not has_reference:
-        st.info("No saved portrait yet? You can still create a video from text. Save a model portrait first if you want to use that character as a visual reference.")
+        st.info("Text-to-video mode selected. Choose your saved portrait or a generated model image to guide the video.")
     topic=st.text_input("Video idea",placeholder="e.g. 3 easy summer outfit ideas")
     scene=st.text_area("What should happen in the video?", "The influencer smiles at the camera, walks naturally toward the camera, and shows the outfit in a bright modern studio. Natural motion, realistic hands, no text overlays.")
     st.caption("Gemini Omni Flash currently chooses the generated clip length; use the prompt to guide pacing and scene complexity.")
