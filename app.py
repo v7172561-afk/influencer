@@ -207,22 +207,27 @@ def google_access_token() -> str:
 def generate_video(prompt: str, reference_uri: str) -> bytes:
     if not reference_uri.startswith("hf://"):
         raise RuntimeError("Save the reference portrait to your Hugging Face bucket first.")
-    local_ref = MEDIA_DIR / "video_reference"
-    download_gcs(reference_uri, str(local_ref))
-    image_bytes = local_ref.read_bytes()
-    client = __import__("google.genai", fromlist=["Client"]).Client(api_key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
-    image_b64 = base64.b64encode(image_bytes).decode("ascii")
-    interaction = client.interactions.create(
-        model=setting("GEMINI_VIDEO_MODEL", "gemini-omni-1.1-flash"),
+    local_ref=MEDIA_DIR/"video_reference_source"
+    download_gcs(reference_uri,str(local_ref))
+    # Normalize PNG/JPEG uploads to a real JPEG before passing the MIME type to Gemini.
+    with Image.open(local_ref) as source:
+        image_buffer=BytesIO()
+        source.convert("RGB").save(image_buffer,format="JPEG",quality=95)
+        image_bytes=image_buffer.getvalue()
+    client=__import__("google.genai",fromlist=["Client"]).Client(api_key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
+    image_b64=base64.b64encode(image_bytes).decode("ascii")
+    interaction=client.interactions.create(
+        model=setting("GEMINI_VIDEO_MODEL","gemini-omni-flash-preview"),
         input=[
-            {"type": "image", "data": image_b64, "mime_type": "image/jpeg"},
-            {"type": "text", "text": prompt + " Use the image as a reference for the same fictional adult influencer. Preserve her identity and do not use it as a literal first frame."},
+            {"type":"image","data":image_b64,"mime_type":"image/jpeg"},
+            {"type":"text","text":prompt+" Use the image as the same fictional adult influencer reference. Preserve her facial identity, hairstyle and overall appearance. Create natural realistic movement and a polished vertical social video."},
         ],
+        response_format={"type":"video","aspect_ratio":"9:16"},
     )
-    video = getattr(interaction, "output_video", None)
-    data = getattr(video, "data", None) if video else None
+    video=getattr(interaction,"output_video",None)
+    data=getattr(video,"data",None) if video else None
     if not data:
-        raise RuntimeError("Gemini returned no video. Check model access, quota and billing.")
+        raise RuntimeError("Gemini returned no video. Confirm gemini-omni-flash-preview is enabled for your API key and check quota/billing.")
     return base64.b64decode(data)
 
 def token_cipher():
@@ -530,7 +535,7 @@ HF_ENDPOINT = "https://varun20014k.s3.hf.co"
 HF_BUCKET = "animedubhindi-storage"
 HF_REGION = "us-east-1"
 GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
-GEMINI_VIDEO_MODEL = "gemini-omni-1.1-flash"''',language="toml")
+GEMINI_VIDEO_MODEL = "gemini-omni-flash-preview"''',language="toml")
     st.markdown("Gemini generates media using your API key. Hugging Face Storage Bucket stores portraits and videos privately using S3-compatible credentials. No Google Cloud Storage bucket is used.")
     st.subheader("Optional Instagram publishing")
     st.code("""INSTAGRAM_APP_ID = "YOUR_META_APP_ID"
