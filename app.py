@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import json, os, sqlite3, time, uuid
+import json, os, sqlite3, time, uuid, hashlib, secrets, urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,7 @@ import base64
 import streamlit as st
 from PIL import Image
 from io import BytesIO
+from cryptography.fernet import Fernet
 
 APP_DIR = Path(__file__).parent
 DATA_DIR = APP_DIR / "data"
@@ -40,6 +41,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS profile(id INTEGER PRIMARY KEY CHECK(id=1), name TEXT, niche TEXT, bio TEXT, persona TEXT, reference_path TEXT, reference_uri TEXT, created_at TEXT);
         CREATE TABLE IF NOT EXISTS posts(id TEXT PRIMARY KEY, created_at TEXT, prompt TEXT, caption TEXT, hashtags TEXT, status TEXT, image_path TEXT, image_uri TEXT, video_path TEXT, video_uri TEXT, ig_media_id TEXT, scheduled_at TEXT, error TEXT);
         CREATE TABLE IF NOT EXISTS metrics(id INTEGER PRIMARY KEY AUTOINCREMENT, post_id TEXT, fetched_at TEXT, views INTEGER DEFAULT 0, reach INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, shares INTEGER DEFAULT 0, saves INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS instagram_connections(id INTEGER PRIMARY KEY CHECK(id=1), instagram_user_id TEXT, username TEXT, encrypted_token TEXT, expires_at TEXT, connected_at TEXT);
         """)
         c.execute("INSERT OR IGNORE INTO profile(id,name,niche,bio,persona,created_at) VALUES(1,'Ava','Lifestyle & fashion','A virtual creator sharing everyday style and inspiration.','Fictional adult woman, 25+, warm confident personality, natural expressions.',?)",(now(),))
 
@@ -143,18 +145,56 @@ def generate_video(prompt: str, reference_uri: str) -> bytes:
         raise RuntimeError("Gemini returned no video. Check model access, quota and billing.")
     return base64.b64decode(data)
 
+def token_cipher():
+    key=setting("TOKEN_ENCRYPTION_KEY")
+    if not key: raise RuntimeError("Add TOKEN_ENCRYPTION_KEY in Streamlit Secrets.")
+    return Fernet(key.encode())
+
+def get_instagram_connection():
+    with db() as c: row=c.execute("SELECT * FROM instagram_connections WHERE id=1").fetchone()
+    if not row: return None
+    item=dict(row)
+    item["access_token"]=token_cipher().decrypt(item["encrypted_token"].encode()).decode()
+    return item
+
+def save_instagram_connection(user_id,username,access_token,expires_in):
+    expiry=datetime.fromtimestamp(datetime.now(timezone.utc).timestamp()+int(expires_in or 0),timezone.utc).isoformat()
+    encrypted=token_cipher().encrypt(access_token.encode()).decode()
+    with db() as c:
+        c.execute("INSERT INTO instagram_connections(id,instagram_user_id,username,encrypted_token,expires_at,connected_at) VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET instagram_user_id=excluded.instagram_user_id,username=excluded.username,encrypted_token=excluded.encrypted_token,expires_at=excluded.expires_at,connected_at=excluded.connected_at",(str(user_id),username,encrypted,expiry,now()))
+
+def instagram_auth_url():
+    app_id=setting("INSTAGRAM_APP_ID"); redirect=setting("INSTAGRAM_REDIRECT_URI")
+    if not app_id or not redirect: raise RuntimeError("Set INSTAGRAM_APP_ID and INSTAGRAM_REDIRECT_URI in Streamlit Secrets.")
+    state=secrets.token_urlsafe(32); st.session_state["ig_oauth_state"]=state
+    params={"client_id":app_id,"redirect_uri":redirect,"response_type":"code","scope":"instagram_business_basic,instagram_business_content_publish,instagram_business_manage_insights","state":state,"enable_fb_login":"0"}
+    return "https://www.instagram.com/oauth/authorize?"+urllib.parse.urlencode(params)
+
+def finish_instagram_auth(code):
+    app_id=setting("INSTAGRAM_APP_ID"); secret=setting("INSTAGRAM_APP_SECRET"); redirect=setting("INSTAGRAM_REDIRECT_URI")
+    response=requests.post("https://api.instagram.com/oauth/access_token",data={"client_id":app_id,"client_secret":secret,"grant_type":"authorization_code","redirect_uri":redirect,"code":code},timeout=30)
+    if not response.ok: raise RuntimeError(response.text[:1000])
+    short=response.json()
+    long=requests.get("https://graph.instagram.com/access_token",params={"grant_type":"ig_exchange_token","client_secret":secret,"access_token":short["access_token"]},timeout=30)
+    if not long.ok: raise RuntimeError(long.text[:1000])
+    token=long.json()
+    me=requests.get("https://graph.instagram.com/me",params={"fields":"user_id,username","access_token":token["access_token"]},timeout=30)
+    if not me.ok: raise RuntimeError(me.text[:1000])
+    user=me.json()
+    save_instagram_connection(user.get("user_id") or user.get("id"),user.get("username","Instagram creator"),token["access_token"],token.get("expires_in",short.get("expires_in",0)))
+
 def ig_request(method,path,params=None):
-    token=setting("INSTAGRAM_ACCESS_TOKEN")
-    if not token: raise RuntimeError("Add INSTAGRAM_ACCESS_TOKEN in Streamlit Secrets.")
-    base=setting("INSTAGRAM_API_BASE_URL","https://graph.instagram.com").rstrip("/")
-    p=dict(params or {}); p["access_token"]=token
-    response=requests.request(method,f"{base}/{path.lstrip('/')}",params=p if method=="GET" else None,data=p if method!="GET" else None,timeout=60)
+    connection=get_instagram_connection()
+    if not connection: raise RuntimeError("Connect your Instagram account first.")
+    p=dict(params or {}); p["access_token"]=connection["access_token"]
+    response=requests.request(method,f"https://graph.instagram.com/{path.lstrip('/')}",params=p if method=="GET" else None,data=p if method!="GET" else None,timeout=60)
     if not response.ok: raise RuntimeError(response.text[:1200])
     return response.json()
 
 def publish_reel(post):
-    igid=setting("INSTAGRAM_USER_ID")
-    if not igid: raise RuntimeError("Add INSTAGRAM_USER_ID in Streamlit Secrets.")
+    connection=get_instagram_connection()
+    if not connection: raise RuntimeError("Connect your Instagram account first.")
+    igid=connection["instagram_user_id"]
     video_url=post.get("video_uri","")
     if video_url.startswith("hf://"):
         bucket_name, object_key = video_url.removeprefix("hf://").split("/", 1)
@@ -175,13 +215,43 @@ def fetch_insights(media_id):
     values={x["name"]:int(x.get("values",[{}])[0].get("value",0)) for x in data.get("data",[])}
     return values
 
+try:
+    logged_in=bool(st.user.is_logged_in)
+except Exception:
+    logged_in=False
+if not logged_in:
+    st.title("✨ Influencer Studio")
+    st.write("Sign in with Google to open your private workspace.")
+    try: st.button("Sign in with Google",type="primary",on_click=st.login)
+    except Exception: st.error("Configure Google OIDC in Streamlit Secrets.")
+    st.stop()
+identity=str(st.user.get("sub") or st.user.get("email") or "")
+if not identity:
+    st.error("Login provider did not return a stable user identity.")
+    st.stop()
+tenant=hashlib.sha256(identity.encode()).hexdigest()[:24]
+DATA_DIR=APP_DIR/"data"/tenant
+MEDIA_DIR=DATA_DIR/"media"
+DATA_DIR.mkdir(parents=True,exist_ok=True); MEDIA_DIR.mkdir(parents=True,exist_ok=True)
+DB=DATA_DIR/"studio.db"
+if st.query_params.get("code"):
+    returned=str(st.query_params.get("state","")); expected=str(st.session_state.get("ig_oauth_state",""))
+    if not expected or not secrets.compare_digest(returned,expected):
+        st.error("Instagram authorization state mismatch. Please reconnect.")
+    else:
+        try:
+            finish_instagram_auth(str(st.query_params.get("code")))
+            st.session_state.pop("ig_oauth_state",None); st.query_params.clear()
+            st.success("Instagram connected.")
+        except Exception as exc: st.error(f"Instagram connection failed: {exc}")
 init_db()
 p=profile()
 st.markdown("<style>.block-container{padding-top:2rem;max-width:1250px}.hero{padding:1.2rem 1.4rem;border:1px solid rgba(128,128,128,.25);border-radius:18px}</style>",unsafe_allow_html=True)
 with st.sidebar:
     st.title("✨ Influencer Studio")
     page=st.radio("Workspace",["Dashboard","Create content","My influencer","Publishing & analytics","Setup"])
-    st.caption("Your AI creator workspace")
+    st.caption(f"Signed in: {st.user.get('email','your account')}")
+    if st.button("Log out"): st.logout()
 
 if page=="Dashboard":
     st.title("Your creator studio")
@@ -271,6 +341,18 @@ elif page=="Create content":
 
 elif page=="Publishing & analytics":
     st.title("Publishing & performance")
+    connection=get_instagram_connection()
+    with st.container(border=True):
+        st.subheader("Your Instagram account")
+        if connection:
+            st.success(f"Connected as @{connection.get('username') or connection['instagram_user_id']}")
+            if st.button("Disconnect Instagram"):
+                with db() as c: c.execute("DELETE FROM instagram_connections WHERE id=1")
+                st.rerun()
+        else:
+            st.info("Connect your own Instagram Creator or Business account.")
+            try: st.link_button("Continue with Instagram",instagram_auth_url())
+            except Exception as exc: st.error(str(exc))
     items=posts()
     ready=[x for x in items if x.get("video_path") and Path(x["video_path"]).exists()]
     if not ready: st.info("Create a video first.")
@@ -318,12 +400,21 @@ HF_REGION = "us-east-1"
 GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
 GEMINI_VIDEO_MODEL = "gemini-omni-1.1-flash"''',language="toml")
     st.markdown("Gemini generates media using your API key. Hugging Face Storage Bucket stores portraits and videos privately using S3-compatible credentials. No Google Cloud Storage bucket is used.")
-    st.subheader("Instagram")
-    st.code('''INSTAGRAM_API_BASE_URL = "https://graph.instagram.com"
-INSTAGRAM_ACCESS_TOKEN = "your-instagram-user-access-token"
-INSTAGRAM_USER_ID = "your-instagram-professional-account-id"''',language="toml")
+    st.subheader("Google sign-in and Instagram OAuth")
+    st.code("""[auth]
+redirect_uri = "https://YOUR-APP.streamlit.app/oauth2callback"
+cookie_secret = "GENERATE-A-LONG-RANDOM-SECRET"
+client_id = "YOUR-GOOGLE-OIDC-CLIENT-ID"
+client_secret = "YOUR-GOOGLE-OIDC-CLIENT-SECRET"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+
+INSTAGRAM_APP_ID = "YOUR_META_APP_ID"
+INSTAGRAM_APP_SECRET = "YOUR_META_APP_SECRET"
+INSTAGRAM_REDIRECT_URI = "https://YOUR-APP.streamlit.app"
+TOKEN_ENCRYPTION_KEY = "YOUR_FERNET_KEY"
+""",language="toml")
     st.markdown("Use an Instagram Creator or Business account and complete Meta's Instagram API login, permissions, and app review requirements. Reels publishing requires a publicly reachable HTTPS video URL. The app generates a temporary signed HTTPS URL for each private video when publishing. Test Meta can fetch it before relying on publishing.")
     st.subheader("Readiness")
-    checks=[("Gemini API key",bool(setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))),("Hugging Face S3 key",bool(setting("HF_ACCESS_KEY"))),("Hugging Face S3 secret",bool(setting("HF_SECRET_KEY"))),("Instagram token",bool(setting("INSTAGRAM_ACCESS_TOKEN"))),("Instagram account ID",bool(setting("INSTAGRAM_USER_ID")))]
+    checks=[("Gemini API key",bool(setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))),("Hugging Face S3 key",bool(setting("HF_ACCESS_KEY"))),("Hugging Face S3 secret",bool(setting("HF_SECRET_KEY"))),("Meta app ID",bool(setting("INSTAGRAM_APP_ID"))),("Meta app secret",bool(setting("INSTAGRAM_APP_SECRET"))),("Token encryption key",bool(setting("TOKEN_ENCRYPTION_KEY"))),("Instagram connected",bool(get_instagram_connection()))]
     for label,ok in checks: st.write(("✅ " if ok else "⬜ ")+label)
     st.warning("This starter stores app records and downloaded media on the app filesystem. For hosted production, move SQLite/media to managed persistent storage and use a secret manager. Do not expose the dashboard publicly without authentication.")
