@@ -487,7 +487,8 @@ elif page=="Create content":
     if st.button("Create video",type="primary"):
         try:
             with st.spinner("Preparing your video job..."):
-                prompt=f"Create a vertical 9:16 Instagram Reel, {duration}. {scene} Topic: {topic}. Use the supplied reference image as the same adult influencer. Keep face, hair, age and identity consistent. High-quality social video, smooth natural motion, no captions, no logos."
+                reference_instruction="Use the saved portrait as the same adult influencer and preserve her identity." if has_reference else "Create an original fictional adult character; no reference image is supplied."
+                prompt=f"Create a vertical 9:16 short social video, approximately {duration}. {scene} Topic: {topic}. {reference_instruction} High-quality social video, smooth natural motion, no captions, no logos."
                 copy=generate_social_copy(topic or scene,"Reel")
                 caption=copy["caption"]
                 hashtags=copy["hashtags"]
