@@ -40,6 +40,7 @@ def init_auth_db():
     with auth_db() as c:
         c.execute("CREATE TABLE IF NOT EXISTS oauth_states(state_hash TEXT PRIMARY KEY, created_at REAL NOT NULL)")
         c.execute("CREATE TABLE IF NOT EXISTS sessions(session_hash TEXT PRIMARY KEY, instagram_user_id TEXT NOT NULL, created_at REAL NOT NULL, expires_at REAL NOT NULL)")
+        c.execute("CREATE TABLE IF NOT EXISTS guest_usage(id INTEGER PRIMARY KEY AUTOINCREMENT, guest_id TEXT NOT NULL, kind TEXT NOT NULL, created_at REAL NOT NULL)")
 
 def create_oauth_state():
     state = secrets.token_urlsafe(32)
@@ -82,6 +83,17 @@ def revoke_browser_session(raw):
     digest = hashlib.sha256(str(raw).encode()).hexdigest()
     with auth_db() as c:
         c.execute("DELETE FROM sessions WHERE session_hash=?", (digest,))
+
+def check_generation_limit(kind):
+    limits={"image":5,"video":2}
+    limit=limits.get(kind,3)
+    cutoff=time.time()-86400
+    with auth_db() as c:
+        c.execute("DELETE FROM guest_usage WHERE created_at < ?",(cutoff-86400,))
+        count=c.execute("SELECT COUNT(*) FROM guest_usage WHERE guest_id=? AND kind=? AND created_at>=?",(guest_id,kind,cutoff)).fetchone()[0]
+        if count>=limit:
+            raise RuntimeError(f"Daily guest limit reached: {limit} {kind} generations per browser workspace. Try again later.")
+        c.execute("INSERT INTO guest_usage(guest_id,kind,created_at) VALUES(?,?,?)",(guest_id,kind,time.time()))
 
 def configure_workspace(instagram_user_id):
     global tenant, DATA_DIR, MEDIA_DIR, DB
@@ -163,6 +175,7 @@ def download_gcs(uri: str, destination: str):
     hf_client().download_file(bucket_name, key, destination)
 
 def generate_portrait(prompt: str, aspect_ratio: str = "4:5") -> bytes:
+    check_generation_limit("image")
     from google import genai
     from google.genai import types
     key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY")
@@ -205,6 +218,7 @@ def google_access_token() -> str:
     return credentials.token
 
 def generate_video(prompt: str, reference_uri: str = "", local_reference_path: str = "") -> bytes:
+    check_generation_limit("video")
     client=__import__("google.genai",fromlist=["Client"]).Client(api_key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
     input_items=[]
     if reference_uri or local_reference_path:
@@ -406,9 +420,14 @@ elif page=="My influencer":
                 with st.spinner("Generating portrait..."):
                     raw=generate_portrait(portrait_prompt)
                     path=MEDIA_DIR/"influencer_reference.png"; path.write_bytes(raw)
-                    uri=upload_gcs(str(path),f"users/{tenant}/references/influencer_reference.png")
+                    try:
+                        uri=upload_gcs(str(path),f"users/{tenant}/references/influencer_reference.png")
+                    except Exception:
+                        uri=""
                     save_profile(name,niche,bio,persona,str(path),uri or "")
-                st.success("Portrait saved as your reusable identity reference."); st.rerun()
+                st.success("Portrait saved as your reusable identity reference.")
+                if not uri: st.info("Portrait saved in this browser workspace; cloud backup is not configured.")
+                st.rerun()
             except Exception as e: st.error(str(e))
     with c2:
         uploaded=st.file_uploader("Or upload an existing portrait",type=["png","jpg","jpeg"])
@@ -416,9 +435,14 @@ elif page=="My influencer":
             try:
                 img=Image.open(BytesIO(uploaded.getvalue())).convert("RGB")
                 path=MEDIA_DIR/"influencer_reference.jpg"; img.save(path,quality=92)
-                uri=upload_gcs(str(path),f"users/{tenant}/references/influencer_reference.jpg")
+                try:
+                    uri=upload_gcs(str(path),f"users/{tenant}/references/influencer_reference.jpg")
+                except Exception:
+                    uri=""
                 save_profile(name,niche,bio,persona,str(path),uri or "")
-                st.success("Reference portrait saved."); st.rerun()
+                st.success("Reference portrait saved.")
+                if not uri: st.info("Portrait saved in this browser workspace; cloud backup is not configured.")
+                st.rerun()
             except Exception as e: st.error(str(e))
     if p.get("reference_uri"): st.caption(f"Cloud reference: {p['reference_uri']}")
 
