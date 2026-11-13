@@ -261,7 +261,12 @@ def generate_video(prompt: str, reference_uri: str = "", local_reference_path: s
 
 def token_cipher():
     key=setting("TOKEN_ENCRYPTION_KEY")
-    if not key: raise RuntimeError("Add TOKEN_ENCRYPTION_KEY in Streamlit Secrets.")
+    if not key:
+        app_secret=setting("INSTAGRAM_APP_SECRET")
+        if not app_secret:
+            raise RuntimeError("Add your Instagram App Secret in Setup, or configure TOKEN_ENCRYPTION_KEY in deployment secrets.")
+        material=hashlib.sha256((app_secret+"|"+str(guest_id)+"|influencer-studio").encode()).digest()
+        key=base64.urlsafe_b64encode(material).decode()
     return Fernet(key.encode())
 
 def get_instagram_connection():
@@ -384,7 +389,7 @@ div[data-testid="stVerticalBlockBorderWrapper"]{border-radius:16px}
 </style>""",unsafe_allow_html=True)
 with st.sidebar:
     st.title("✨ Influencer Studio")
-    page=st.radio("Studio",["Dashboard","Create content","My influencer","Publishing & analytics","Setup"])
+    page=st.radio("Studio",["Dashboard","How to use","Create content","My influencer","Publishing & analytics","Setup"])
     st.caption("Private workspace · this browser")
     if connection:
         st.success(f"Instagram: @{connection.get('username') or connection['instagram_user_id']}")
@@ -405,6 +410,39 @@ if page=="Dashboard":
             if item["video_path"] and Path(item["video_path"]).exists(): st.video(item["video_path"])
             elif item["image_path"] and Path(item["image_path"]).exists(): st.image(item["image_path"],width=240)
     st.info("Start in **My influencer** to save a reusable portrait, then create your first short video.")
+
+elif page=="How to use":
+    st.title("How to use Influencer Studio")
+    st.write("A guided tour of the main tools, with examples of what each step does. Explore the app without connecting Instagram.")
+    st.subheader("The complete creator workflow")
+    st.markdown("**1. Set up services → 2. Create your influencer → 3. Generate images and videos → 4. Review content → 5. Connect Instagram and publish → 6. Check available insights.**")
+    st.divider()
+    with st.container(border=True):
+        st.subheader("1 · Setup: connect the services you want")
+        st.markdown("- **Gemini API key:** powers AI portraits, model images, video generation and social captions.\n- **Hugging Face storage (optional):** stores media in your S3-compatible bucket. Without it, files stay in the current app workspace and may not persist on Streamlit Cloud.\n- **Instagram app credentials:** your Meta developer app's ID, secret and exact redirect URI are used for Instagram OAuth. Instagram is optional.")
+        st.info("Demo: Setup shows whether each service is configured. This guide does not create fake API connections or sample analytics.")
+    with st.container(border=True):
+        st.subheader("2 · My influencer: build a consistent virtual creator")
+        st.markdown("Choose a creator name, niche, bio and stable identity description. Generate a reference portrait with Gemini or upload an image. The saved portrait can guide future video generations.")
+        st.code("Example identity: fictional adult creator, age 25+, warm confident personality, shoulder-length dark hair, natural expressions.",language="text")
+    with st.container(border=True):
+        st.subheader("3 · Create content: make images, videos and captions")
+        st.markdown("- **AI model image:** enter an idea and prompt, then choose Portrait 4:5, Square 1:1 or Story 9:16. Suggested caption and hashtags are generated too.\n- **AI video:** describe the scene and select your saved portrait or a generated image as reference, or choose text-to-video.\n- **Download:** preview and download generated media.")
+        st.code("Image idea: editorial streetwear photoshoot in Tokyo\nVideo idea: 3 easy summer outfit ideas\nScene: creator walks toward camera and shows the outfit.",language="text")
+    with st.container(border=True):
+        st.subheader("4 · Dashboard and content library")
+        st.markdown("The Dashboard summarizes content in this browser workspace and shows recent creations. Create content includes saved videos; Publishing & analytics lists publishable media and lets you edit captions and hashtags.")
+        st.caption("This is a browser workspace, not a full registered-user account system. Clearing cookies or losing local app storage can affect access.")
+    with st.container(border=True):
+        st.subheader("5 · Instagram publishing (optional)")
+        st.markdown("Connect an eligible Instagram Creator or Business account through Instagram's official authorization screen. Never enter your Instagram password here. Review the caption and hashtags, then use **Publish Reel now** on a ready video.")
+        st.warning("Publishing requires a properly configured Meta developer app, matching redirect URI, required permissions and any applicable Meta review/Advanced Access.")
+    with st.container(border=True):
+        st.subheader("6 · Publishing & analytics")
+        st.markdown("After a Reel is published, use **Refresh insights** to request metrics exposed by Instagram's API for that media item, such as views, reach, likes, comments, shares and saves when supported.")
+        st.info("This is not a full copy of Instagram's in-app Professional Dashboard. Audience demographics, follower trends and other metrics are not shown unless the connected API exposes them.")
+    st.subheader("Quick start")
+    st.markdown("1. Open **Setup** and add a Gemini key if needed.\n2. Open **My influencer** and save a profile plus reference portrait.\n3. Open **Create content** and generate an image or video.\n4. Open **Publishing & analytics** when you want to connect Instagram and publish.")
 
 elif page=="My influencer":
     st.title("Your influencer identity")
@@ -660,31 +698,69 @@ elif page=="Setup":
             st.caption("Optional. Without a bucket, files are stored only in the current app workspace.")
 
     with st.container(border=True):
-        st.subheader("Instagram publishing")
-        st.write("Never enter your Instagram password here. Connect securely through Instagram's authorization page.")
+        st.subheader("Instagram app credentials")
+        st.write("Add credentials from your own Meta developer app. These values start and complete Instagram OAuth for your workspace.")
+        with st.form("visitor_instagram_app_form"):
+            ig_app_id=st.text_input("INSTAGRAM_APP_ID (Meta App ID)",placeholder="Your Meta App ID")
+            ig_app_secret=st.text_input("INSTAGRAM_APP_SECRET (Meta App Secret)",type="password",placeholder="Paste your Meta App Secret")
+            ig_redirect=st.text_input("INSTAGRAM_REDIRECT_URI",value=setting("INSTAGRAM_REDIRECT_URI"),placeholder="https://your-app.streamlit.app")
+            ig_submit=st.form_submit_button("Save Instagram app settings",type="primary")
+        if ig_submit:
+            if not ig_app_id.strip() or not ig_app_secret.strip() or not ig_redirect.strip():
+                st.error("Enter all three Instagram app settings.")
+            elif not (ig_redirect.strip().startswith("https://") or ig_redirect.strip().startswith("http://localhost")):
+                st.error("Use an HTTPS redirect URL (localhost is allowed for local development).")
+            else:
+                saved=dict(st.session_state.get("visitor_api_secrets",{}))
+                saved.update({"INSTAGRAM_APP_ID":ig_app_id.strip(),"INSTAGRAM_APP_SECRET":ig_app_secret.strip(),"INSTAGRAM_REDIRECT_URI":ig_redirect.strip()})
+                st.session_state["visitor_api_secrets"]=saved
+                st.success("Instagram app settings saved in this browser session.")
+                st.rerun()
+        visitor_secrets=st.session_state.get("visitor_api_secrets",{})
+        visitor_ig_ready=all(bool(visitor_secrets.get(k) or setting(k)) for k in ("INSTAGRAM_APP_ID","INSTAGRAM_APP_SECRET","INSTAGRAM_REDIRECT_URI"))
+        if all(visitor_secrets.get(k) for k in ("INSTAGRAM_APP_ID","INSTAGRAM_APP_SECRET","INSTAGRAM_REDIRECT_URI")):
+            st.success("Your Instagram app credentials are active for this session.")
+            if st.button("Remove my Instagram app settings",key="remove_visitor_instagram"):
+                saved=dict(st.session_state.get("visitor_api_secrets",{}))
+                for key in ("INSTAGRAM_APP_ID","INSTAGRAM_APP_SECRET","INSTAGRAM_REDIRECT_URI"):
+                    saved.pop(key,None)
+                st.session_state["visitor_api_secrets"]=saved
+                st.rerun()
+        elif visitor_ig_ready:
+            st.info("Instagram app settings are available from the website deployment.")
+        else:
+            st.warning("Instagram app settings are not complete yet.")
+        with st.expander("Where do I get these values?"):
+            st.markdown("1. Open [Meta for Developers](https://developers.facebook.com/) and create or select an app that supports Instagram API with Instagram Login.\n2. Add/configure Instagram Login and its OAuth redirect/callback settings.\n3. Copy the app's **App ID** and **App Secret** into the fields above.\n4. Set the redirect URI to your exact deployed app URL and register that exact same URL in Meta. Keep http/https and trailing slashes identical.\n5. Configure permissions for basic account access, content publishing and insights. Meta review/Advanced Access may be required before public users can connect.")
+        st.caption("Never share your App Secret publicly or commit it to GitHub. Values entered here stay in Streamlit session memory only and may disappear when the session expires or the app restarts.")
+        st.divider()
+        st.subheader("Connect your Instagram account")
+        st.write("App ID and Secret identify your Meta app. OAuth separately lets you authorize your Instagram Creator/Business account. Never enter your Instagram password here.")
         connection=get_instagram_connection()
         if connection:
             st.success(f"Connected Instagram: @{connection.get('username') or connection['instagram_user_id']}")
-        else:
-            st.info("Instagram is optional. You can generate images and videos without connecting it.")
+            if st.button("Disconnect Instagram from this workspace",key="disconnect_instagram_setup"):
+                with db() as c: c.execute("DELETE FROM instagram_connections WHERE id=1")
+                st.rerun()
+        elif visitor_ig_ready:
             try:
                 if "pending_instagram_state" not in st.session_state:
                     st.session_state["pending_instagram_state"]=create_oauth_state()
                 state=st.session_state["pending_instagram_state"]
                 cookie_manager.set(OAUTH_STATE_COOKIE,state,key="setup_instagram_oauth_state",expires_at=datetime.now(timezone.utc)+timedelta(minutes=10),max_age=600,path="/",secure=True,same_site="lax")
                 st.link_button("Connect Instagram securely",instagram_auth_url(state),type="primary")
-            except Exception:
-                st.warning("Instagram publishing needs the website owner's Meta app configuration.")
-        owner_instagram_ready=all(bool(setting(k)) for k in ("INSTAGRAM_APP_ID","INSTAGRAM_APP_SECRET","INSTAGRAM_REDIRECT_URI","TOKEN_ENCRYPTION_KEY"))
-        st.caption("Website Instagram integration: " + ("configured" if owner_instagram_ready else "not configured by the owner"))
-        st.caption("The website owner configures the Meta App ID and App Secret. Each visitor connects their own Instagram account through OAuth.")
+            except Exception as exc:
+                st.error(f"Could not start Instagram connection: {exc}")
+        else:
+            st.info("Complete the three app settings above to enable Instagram connection.")
 
     with st.container(border=True):
         st.subheader("Configuration status")
         visitor_secrets=st.session_state.get("visitor_api_secrets",{})
         gemini_ready=bool(visitor_secrets.get("GOOGLE_API_KEY") or setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
         hf_ready=bool((visitor_secrets.get("HF_ACCESS_KEY") and visitor_secrets.get("HF_SECRET_KEY")) or (setting("HF_ACCESS_KEY") and setting("HF_SECRET_KEY")))
-        rows=[("Gemini generation",gemini_ready),("Hugging Face storage",hf_ready),("Instagram integration",owner_instagram_ready),("Instagram account",bool(get_instagram_connection()))]
+        instagram_ready=all(bool(setting(k)) for k in ("INSTAGRAM_APP_ID","INSTAGRAM_APP_SECRET","INSTAGRAM_REDIRECT_URI"))
+        rows=[("Gemini generation",gemini_ready),("Hugging Face storage",hf_ready),("Instagram app settings",instagram_ready),("Instagram account",bool(get_instagram_connection()))]
         for label,ready in rows:
             st.write(("✅ " if ready else "○ ")+label)
-    st.info("Your entered keys are kept in Streamlit session memory only. They are masked and are not committed to GitHub or saved in a shared database. They can disappear when the browser session expires or the app restarts. For durable user accounts, encrypted per-user credential storage is needed.")
+    st.info("Your entered keys and Instagram app credentials are kept in Streamlit session memory only. They are not committed to GitHub or saved in a shared database, and may disappear when the session expires or the app restarts. Instagram OAuth tokens are encrypted in the workspace database; for production, use managed persistent storage and dedicated per-user secret management.")
