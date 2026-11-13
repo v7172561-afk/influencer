@@ -204,14 +204,17 @@ def google_access_token() -> str:
     credentials.refresh(Request())
     return credentials.token
 
-def generate_video(prompt: str, reference_uri: str = "") -> bytes:
+def generate_video(prompt: str, reference_uri: str = "", local_reference_path: str = "") -> bytes:
     client=__import__("google.genai",fromlist=["Client"]).Client(api_key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
     input_items=[]
-    if reference_uri:
-        if not reference_uri.startswith("hf://"):
-            raise RuntimeError("The saved influencer reference is not in the configured Hugging Face bucket.")
-        local_ref=MEDIA_DIR/"video_reference_source"
-        download_gcs(reference_uri,str(local_ref))
+    if reference_uri or local_reference_path:
+        if reference_uri.startswith("hf://"):
+            local_ref=MEDIA_DIR/"video_reference_source"
+            download_gcs(reference_uri,str(local_ref))
+        elif local_reference_path and Path(local_reference_path).exists():
+            local_ref=Path(local_reference_path)
+        else:
+            raise RuntimeError("The saved reference portrait is unavailable. Please upload it again.")
         with Image.open(local_ref) as source:
             image_buffer=BytesIO()
             source.convert("RGB").save(image_buffer,format="JPEG",quality=95)
@@ -228,8 +231,6 @@ def generate_video(prompt: str, reference_uri: str = "") -> bytes:
     interaction=client.interactions.create(
         model=setting("GEMINI_VIDEO_MODEL","gemini-omni-1.1-flash"),
         input=input_items,
-        response_format={"type":"video","aspect_ratio":"9:16","resolution":"720p"},
-        generation_config={"video_config":{"task":task}},
     )
     video=getattr(interaction,"output_video",None)
     data=getattr(video,"data",None) if video else None
@@ -374,7 +375,7 @@ if page=="Dashboard":
     st.markdown(f"<div class='hero'><h1>✨ Your AI Creator Studio</h1><p>Create a virtual influencer, generate model images and vertical videos, then publish when you are ready.</p><b>Creator: {p['name']}</b></div>",unsafe_allow_html=True)
     items=posts()
     c1,c2,c3,c4=st.columns(4)
-    c1.metric("Total drafts",len(items)); c2.metric("Videos ready",sum(bool(x["video_uri"] or x["video_path"]) for x in items)); c3.metric("Published",sum(x["status"]=="published" for x in items)); c4.metric("Needs review",sum(x["status"] in ("draft","ready","failed") for x in items))
+    c1.metric("Content created",len(items)); c2.metric("Videos ready",sum(bool(x["video_uri"] or x["video_path"]) for x in items)); c3.metric("Model images",sum(bool(x["image_uri"] or x["image_path"]) for x in items)); c4.metric("Published",sum(x["status"]=="published" for x in items))
     st.subheader("Recent content")
     for item in items[:5]:
         with st.container(border=True):
@@ -438,9 +439,13 @@ elif page=="Create content":
                     pid=save_post(full_prompt,copy["caption"],copy["hashtags"])
                     path=MEDIA_DIR/f"{pid}.png"
                     path.write_bytes(raw)
-                    uri=upload_gcs(str(path),f"users/{tenant}/images/{pid}.png")
+                    try:
+                        uri=upload_gcs(str(path),f"users/{tenant}/images/{pid}.png")
+                    except Exception:
+                        uri=""
                     update_post(pid,status="ready",image_path=str(path),image_uri=uri)
                 st.success("Your model image is ready.")
+                if not uri: st.info("Image saved in this browser workspace. Configure Hugging Face for cloud backup.")
                 st.image(raw,use_container_width=True)
                 st.download_button("Download image",data=raw,file_name=f"ai-model-{pid}.png",mime="image/png")
                 st.caption("Your image is saved in your content library below.")
@@ -466,9 +471,12 @@ elif page=="Create content":
                 ref_uri=p.get("reference_uri","") if has_reference else ""
                 if has_reference and not ref_uri:
                     ref_uri=upload_gcs(p["reference_path"],f"users/{tenant}/references/influencer_reference.jpg")
-                video_bytes=generate_video(prompt,ref_uri)
+                video_bytes=generate_video(prompt,ref_uri,p.get("reference_path","") if has_reference else "")
                 local=MEDIA_DIR/f"{pid}.mp4"; local.write_bytes(video_bytes)
-                video_uri=upload_gcs(str(local),f"users/{tenant}/videos/{pid}.mp4")
+                try:
+                    video_uri=upload_gcs(str(local),f"users/{tenant}/videos/{pid}.mp4")
+                except Exception:
+                    video_uri=""
                 update_post(pid,status="ready",video_path=str(local),video_uri=video_uri)
             st.success("Your video is ready.")
             st.video(str(local))
