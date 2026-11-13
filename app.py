@@ -26,6 +26,12 @@ st.set_page_config(page_title="Influencer Studio", page_icon="✨", layout="wide
 
 def setting(key: str, default: str = "") -> str:
     try:
+        visitor_secrets=st.session_state.get("visitor_api_secrets",{})
+        if visitor_secrets.get(key):
+            return str(visitor_secrets[key])
+    except Exception:
+        pass
+    try:
         value = st.secrets.get(key, os.getenv(key, default))
     except Exception:
         value = os.getenv(key, default)
@@ -586,26 +592,99 @@ elif page=="Publishing & analytics":
                 st.caption("Images can be downloaded and used in your social posts. Reel publishing is available for videos.")
 
 elif page=="Setup":
-    st.title("Connect your services")
-    st.write("Add credentials in Streamlit Cloud → App → Settings → Secrets, or in a local .streamlit/secrets.toml file. Never paste private keys into GitHub.")
-    st.subheader("Gemini generation and private Hugging Face storage")
-    st.code('''GOOGLE_API_KEY = "your-gemini-api-key"
-HF_ACCESS_KEY = "HFAK..."
-HF_SECRET_KEY = "your-hugging-face-s3-secret"
-HF_ENDPOINT = "https://varun20014k.s3.hf.co"
-HF_BUCKET = "animedubhindi-storage"
-HF_REGION = "us-east-1"
-GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
-GEMINI_VIDEO_MODEL = "gemini-omni-1.1-flash"''',language="toml")
-    st.markdown("Gemini generates media using your API key. Hugging Face Storage Bucket stores portraits and videos privately using S3-compatible credentials. No Google Cloud Storage bucket is used.")
-    st.subheader("Optional Instagram publishing")
-    st.code("""INSTAGRAM_APP_ID = "YOUR_META_APP_ID"
-INSTAGRAM_APP_SECRET = "YOUR_META_APP_SECRET"
-INSTAGRAM_REDIRECT_URI = "https://YOUR-APP.streamlit.app"
-TOKEN_ENCRYPTION_KEY = "YOUR_FERNET_KEY"
-""",language="toml")
-    st.markdown("Instagram is optional for image and video generation. Connect a Creator or Business account only when you want to publish Reels or retrieve insights. Register the exact redirect URI in Meta's Instagram Login settings and complete required App Review / Advanced Access.")
-    st.subheader("Readiness")
-    checks=[("Gemini API key",bool(setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))),("Hugging Face S3 key",bool(setting("HF_ACCESS_KEY"))),("Hugging Face S3 secret",bool(setting("HF_SECRET_KEY"))),("Instagram app ID",bool(setting("INSTAGRAM_APP_ID"))),("Instagram app secret",bool(setting("INSTAGRAM_APP_SECRET"))),("Instagram redirect URI",bool(setting("INSTAGRAM_REDIRECT_URI"))),("Token encryption key",bool(setting("TOKEN_ENCRYPTION_KEY"))),("Instagram sign-in active",bool(get_instagram_connection()))]
-    for label,ok in checks: st.write(("✅ " if ok else "⬜ ")+label)
-    st.warning("This starter stores app records and downloaded media on the app filesystem. For hosted production, move SQLite/media to managed persistent storage and use a secret manager. Guest workspaces are separated by a random browser session. Clearing cookies or switching devices starts a new workspace.")
+    st.title("Your API keys & connections")
+    st.caption("Add your own Gemini API key and optional Hugging Face storage credentials. Values are masked and kept in this active browser session.")
+    app_gemini=bool(setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
+    app_hf=bool(setting("HF_ACCESS_KEY") and setting("HF_SECRET_KEY"))
+    visitor_secrets=st.session_state.get("visitor_api_secrets",{})
+    with st.container(border=True):
+        st.subheader("Gemini API key")
+        st.write("Use your own Google AI Studio key for image, video and caption generation.")
+        with st.form("visitor_gemini_key_form"):
+            gemini_input=st.text_input("Gemini API key",type="password",placeholder="Paste your API key")
+            gemini_submit=st.form_submit_button("Save Gemini key",type="primary")
+        if gemini_submit:
+            if not gemini_input.strip():
+                st.error("Paste a Gemini API key first.")
+            else:
+                saved=dict(st.session_state.get("visitor_api_secrets",{}))
+                saved["GOOGLE_API_KEY"]=gemini_input.strip()
+                st.session_state["visitor_api_secrets"]=saved
+                st.success("Gemini key added for this session.")
+                st.rerun()
+        visitor_secrets=st.session_state.get("visitor_api_secrets",{})
+        if visitor_secrets.get("GOOGLE_API_KEY"):
+            st.success("Gemini key: your own key is active")
+            if st.button("Remove my Gemini key",key="remove_visitor_gemini"):
+                saved=dict(st.session_state.get("visitor_api_secrets",{}))
+                saved.pop("GOOGLE_API_KEY",None)
+                st.session_state["visitor_api_secrets"]=saved
+                st.rerun()
+        elif app_gemini:
+            st.info("Gemini key: app owner's key is available")
+        else:
+            st.warning("Gemini key: not configured")
+
+    with st.container(border=True):
+        st.subheader("Hugging Face storage (optional)")
+        st.write("Use your own S3-compatible bucket for storing generated media.")
+        with st.form("visitor_hf_keys_form"):
+            hf_access=st.text_input("Hugging Face access key",type="password",placeholder="HFAK…")
+            hf_secret=st.text_input("Hugging Face secret key",type="password",placeholder="S3 secret")
+            hf_endpoint=st.text_input("S3 endpoint",value=setting("HF_ENDPOINT","https://your-account.s3.hf.co"))
+            hf_bucket=st.text_input("Bucket name",value=setting("HF_BUCKET",""))
+            hf_submit=st.form_submit_button("Save storage credentials")
+        if hf_submit:
+            if not hf_access.strip() or not hf_secret.strip():
+                st.error("Enter both storage keys.")
+            else:
+                saved=dict(st.session_state.get("visitor_api_secrets",{}))
+                saved.update({"HF_ACCESS_KEY":hf_access.strip(),"HF_SECRET_KEY":hf_secret.strip()})
+                if hf_endpoint.strip(): saved["HF_ENDPOINT"]=hf_endpoint.strip()
+                if hf_bucket.strip(): saved["HF_BUCKET"]=hf_bucket.strip()
+                st.session_state["visitor_api_secrets"]=saved
+                st.success("Storage credentials added for this session.")
+                st.rerun()
+        visitor_secrets=st.session_state.get("visitor_api_secrets",{})
+        if visitor_secrets.get("HF_ACCESS_KEY") and visitor_secrets.get("HF_SECRET_KEY"):
+            st.success("Hugging Face: your credentials are active")
+            if st.button("Remove my Hugging Face credentials",key="remove_visitor_hf"):
+                saved=dict(st.session_state.get("visitor_api_secrets",{}))
+                for key in ("HF_ACCESS_KEY","HF_SECRET_KEY","HF_ENDPOINT","HF_BUCKET","HF_REGION"):
+                    saved.pop(key,None)
+                st.session_state["visitor_api_secrets"]=saved
+                st.rerun()
+        elif app_hf:
+            st.info("Hugging Face: app owner's storage credentials are available")
+        else:
+            st.caption("Optional. Without a bucket, files are stored only in the current app workspace.")
+
+    with st.container(border=True):
+        st.subheader("Instagram publishing")
+        st.write("Never enter your Instagram password here. Connect securely through Instagram's authorization page.")
+        connection=get_instagram_connection()
+        if connection:
+            st.success(f"Connected Instagram: @{connection.get('username') or connection['instagram_user_id']}")
+        else:
+            st.info("Instagram is optional. You can generate images and videos without connecting it.")
+            try:
+                if "pending_instagram_state" not in st.session_state:
+                    st.session_state["pending_instagram_state"]=create_oauth_state()
+                state=st.session_state["pending_instagram_state"]
+                cookie_manager.set(OAUTH_STATE_COOKIE,state,key="setup_instagram_oauth_state",expires_at=datetime.now(timezone.utc)+timedelta(minutes=10),max_age=600,path="/",secure=True,same_site="lax")
+                st.link_button("Connect Instagram securely",instagram_auth_url(state),type="primary")
+            except Exception:
+                st.warning("Instagram publishing needs the website owner's Meta app configuration.")
+        owner_instagram_ready=all(bool(setting(k)) for k in ("INSTAGRAM_APP_ID","INSTAGRAM_APP_SECRET","INSTAGRAM_REDIRECT_URI","TOKEN_ENCRYPTION_KEY"))
+        st.caption("Website Instagram integration: " + ("configured" if owner_instagram_ready else "not configured by the owner"))
+        st.caption("The website owner configures the Meta App ID and App Secret. Each visitor connects their own Instagram account through OAuth.")
+
+    with st.container(border=True):
+        st.subheader("Configuration status")
+        visitor_secrets=st.session_state.get("visitor_api_secrets",{})
+        gemini_ready=bool(visitor_secrets.get("GOOGLE_API_KEY") or setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
+        hf_ready=bool((visitor_secrets.get("HF_ACCESS_KEY") and visitor_secrets.get("HF_SECRET_KEY")) or (setting("HF_ACCESS_KEY") and setting("HF_SECRET_KEY")))
+        rows=[("Gemini generation",gemini_ready),("Hugging Face storage",hf_ready),("Instagram integration",owner_instagram_ready),("Instagram account",bool(get_instagram_connection()))]
+        for label,ready in rows:
+            st.write(("✅ " if ready else "○ ")+label)
+    st.info("Your entered keys are kept in Streamlit session memory only. They are masked and are not committed to GitHub or saved in a shared database. They can disappear when the browser session expires or the app restarts. For durable user accounts, encrypted per-user credential storage is needed.")
