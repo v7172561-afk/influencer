@@ -217,10 +217,10 @@ def generate_video(prompt: str, reference_uri: str) -> bytes:
     client=__import__("google.genai",fromlist=["Client"]).Client(api_key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
     image_b64=base64.b64encode(image_bytes).decode("ascii")
     interaction=client.interactions.create(
-        model=setting("GEMINI_VIDEO_MODEL","gemini-omni-flash-preview"),
+        model=setting("GEMINI_VIDEO_MODEL","gemini-omni-1.1-flash"),
         input=[
+            {"type":"text","text":prompt+" Use the supplied image as a reference for the same fictional adult influencer, not as the literal first frame. Preserve her facial identity, hairstyle and overall appearance. Create natural realistic movement and a polished vertical social video. 9:16 aspect ratio."},
             {"type":"image","data":image_b64,"mime_type":"image/jpeg"},
-            {"type":"text","text":prompt+" Use the image as the same fictional adult influencer reference. Preserve her facial identity, hairstyle and overall appearance. Create natural realistic movement and a polished vertical social video."},
         ],
         response_format={"type":"video","aspect_ratio":"9:16"},
     )
@@ -535,7 +535,7 @@ HF_ENDPOINT = "https://varun20014k.s3.hf.co"
 HF_BUCKET = "animedubhindi-storage"
 HF_REGION = "us-east-1"
 GEMINI_IMAGE_MODEL = "gemini-3.1-flash-image"
-GEMINI_VIDEO_MODEL = "gemini-omni-flash-preview"''',language="toml")
+GEMINI_VIDEO_MODEL = "gemini-omni-1.1-flash"''',language="toml")
     st.markdown("Gemini generates media using your API key. Hugging Face Storage Bucket stores portraits and videos privately using S3-compatible credentials. No Google Cloud Storage bucket is used.")
     st.subheader("Optional Instagram publishing")
     st.code("""INSTAGRAM_APP_ID = "YOUR_META_APP_ID"
