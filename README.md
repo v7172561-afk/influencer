@@ -60,3 +60,11 @@ For local Instagram OAuth testing, set the redirect URI to `http://localhost:850
 - Instagram OAuth token refresh/revocation and public app review must be fully tested. Publishing requires a publicly reachable video URL; private bucket delivery must be tested end-to-end with Meta.
 - Gemini models, video generation methods, quotas, and billing depend on the Google AI account and model availability. Check the configured model IDs against the models enabled for your API key.
 - The app code has been updated, but end-to-end image/video generation and Instagram publishing still require testing with your actual service credentials and deployed Streamlit app.
+
+## Visitor API key settings
+
+The Setup page lets each visitor enter their own Gemini API key and optional Hugging Face S3 access/secret keys. Keys are masked in the form and stored in that visitor's Streamlit session memory, overriding app-owner defaults for that session. Visitors can inspect whether the app owner has configured service credentials and remove their own keys.
+
+These visitor-entered keys are not stored in GitHub or a shared database, but this is session-only storage: keys can be lost when the Streamlit session expires, reconnects, or the app restarts. Do not describe this as permanent encrypted storage. Before a public production launch, use authenticated user accounts and encrypted per-user secrets in a managed secret store.
+
+Instagram passwords and raw personal access tokens are not accepted in the form. Visitors connect their own Instagram Creator/Business account using the Instagram OAuth flow. The website operator must configure the Meta App ID, App Secret, redirect URI and token encryption key in the app's private deployment secrets.
