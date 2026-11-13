@@ -287,76 +287,50 @@ def fetch_insights(media_id):
     return values
 
 init_auth_db()
-cookie_manager = stx.CookieManager(key="influencer_auth_cookie_manager")
+cookie_manager = stx.CookieManager(key="influencer_guest_cookie")
 browser_cookies = cookie_manager.get_all()
 if browser_cookies is None:
-    st.info("Loading your secure sign-in session…")
+    st.info("Preparing your creator workspace…")
     st.stop()
-
-if st.query_params.get("error"):
-    error_detail = str(st.query_params.get("error_description") or st.query_params.get("error"))
-    st.error("Instagram sign-in was not completed: " + error_detail)
-    st.query_params.clear()
-    st.stop()
-
-if st.query_params.get("code"):
-    returned_state = str(st.query_params.get("state",""))
-    browser_state = str(browser_cookies.get(OAUTH_STATE_COOKIE) or "")
-    valid_state = bool(browser_state and secrets.compare_digest(returned_state,browser_state) and consume_oauth_state(returned_state))
-    if not valid_state:
-        st.error("Instagram sign-in expired or could not be verified. Please start again.")
-        st.stop()
-    try:
-        instagram_user_id, username, access_token, expires_in = finish_instagram_auth(str(st.query_params.get("code")))
-        configure_workspace(instagram_user_id)
-        init_db()
-        save_instagram_connection(instagram_user_id,username,access_token,expires_in)
-        session_token = create_browser_session(instagram_user_id)
-        cookie_manager.set(SESSION_COOKIE,session_token,key="save_studio_session",expires_at=datetime.now(timezone.utc)+timedelta(days=30),max_age=30*24*60*60,path="/",secure=True,same_site="lax")
-        cookie_manager.delete(OAUTH_STATE_COOKIE,key="clear_oauth_state")
-        st.query_params.clear()
-        st.success(f"Instagram account @{username} connected. Your private workspace is ready.")
-        if st.button("Open my studio",type="primary"):
-            st.rerun()
-        st.stop()
-    except Exception as exc:
-        st.error(f"Instagram sign-in failed: {exc}")
-        st.stop()
-
 session_token = str(browser_cookies.get(SESSION_COOKIE) or "")
-instagram_user_id = resolve_browser_session(session_token)
-if not instagram_user_id:
-    st.title("✨ Influencer Studio")
-    st.write("Sign in securely with your Instagram professional account to open your private AI influencer workspace.")
-    if "pending_instagram_state" not in st.session_state:
-        st.session_state["pending_instagram_state"] = create_oauth_state()
-    state = st.session_state["pending_instagram_state"]
-    cookie_manager.set(OAUTH_STATE_COOKIE,state,key="save_oauth_state",expires_at=datetime.now(timezone.utc)+timedelta(minutes=10),max_age=600,path="/",secure=True,same_site="lax")
-    try:
-        st.link_button("Continue with Instagram",instagram_auth_url(state),type="primary",width="stretch")
-    except Exception as exc:
-        st.error(str(exc))
-    st.caption("Instagram sign-in requires a Creator or Business account. Personal Instagram accounts are not supported by this publishing API.")
-    st.stop()
-
-configure_workspace(instagram_user_id)
+guest_id = resolve_browser_session(session_token)
+if not guest_id:
+    guest_id = "guest_" + secrets.token_urlsafe(24)
+    session_token = create_browser_session(guest_id)
+    cookie_manager.set(SESSION_COOKIE,session_token,key="create_guest_workspace",expires_at=datetime.now(timezone.utc)+timedelta(days=30),max_age=30*24*60*60,path="/",secure=True,same_site="lax")
+    st.rerun()
+configure_workspace(guest_id)
 init_db()
-connection = get_instagram_connection()
-if not connection:
-    st.error("Your saved Instagram connection is unavailable. Please sign in with Instagram again.")
-    revoke_browser_session(session_token)
-    cookie_manager.delete(SESSION_COOKIE,key="clear_expired_studio_session")
-    st.stop()
+# Instagram is optional. Users can generate media before connecting it.
+if st.query_params.get("error"):
+    st.error("Instagram connection was not completed: " + str(st.query_params.get("error_description") or st.query_params.get("error")))
+    st.query_params.clear()
+elif st.query_params.get("code"):
+    returned_state=str(st.query_params.get("state",""))
+    browser_state=str(browser_cookies.get(OAUTH_STATE_COOKIE) or "")
+    valid=bool(browser_state and secrets.compare_digest(returned_state,browser_state) and consume_oauth_state(returned_state))
+    if not valid:
+        st.error("Instagram connection expired or could not be verified. Please try again.")
+    else:
+        try:
+            instagram_user_id,username,access_token,expires_in=finish_instagram_auth(str(st.query_params.get("code")))
+            save_instagram_connection(instagram_user_id,username,access_token,expires_in)
+            cookie_manager.delete(OAUTH_STATE_COOKIE,key="clear_instagram_state")
+            st.success(f"Connected Instagram account @{username}.")
+        except Exception as exc:
+            st.error(f"Instagram connection failed: {exc}")
+    st.query_params.clear()
+connection=get_instagram_connection()
 p=profile()
 st.markdown("<style>.block-container{padding-top:2rem;max-width:1250px}.hero{padding:1.2rem 1.4rem;border:1px solid rgba(128,128,128,.25);border-radius:18px}</style>",unsafe_allow_html=True)
 with st.sidebar:
     st.title("✨ Influencer Studio")
-    page=st.radio("Workspace",["Dashboard","Create content","My influencer","Publishing & analytics","Setup"])
-    st.caption(f"Connected Instagram: @{connection.get('username') or instagram_user_id}")
-    if st.button("Log out"):
-        revoke_browser_session(session_token)
-        cookie_manager.delete(SESSION_COOKIE,key="logout_studio_session")
-        st.rerun()
+    page=st.radio("Studio",["Dashboard","Create content","My influencer","Publishing & analytics","Setup"])
+    st.caption("Private workspace · this browser")
+    if connection:
+        st.success(f"Instagram: @{connection.get('username') or connection['instagram_user_id']}")
+    else:
+        st.caption("Instagram connection is optional.")
 
 if page=="Dashboard":
     st.title("Your creator studio")
@@ -455,8 +429,13 @@ elif page=="Publishing & analytics":
                 with db() as c: c.execute("DELETE FROM instagram_connections WHERE id=1")
                 st.rerun()
         else:
-            st.info("Connect your own Instagram Creator or Business account.")
-            try: st.link_button("Continue with Instagram",instagram_auth_url())
+            st.info("Create images and videos without Instagram. Connect an account only when you are ready to publish.")
+            try:
+                if "pending_instagram_state" not in st.session_state:
+                    st.session_state["pending_instagram_state"]=create_oauth_state()
+                state=st.session_state["pending_instagram_state"]
+                cookie_manager.set(OAUTH_STATE_COOKIE,state,key="store_instagram_oauth_state",expires_at=datetime.now(timezone.utc)+timedelta(minutes=10),max_age=600,path="/",secure=True,same_site="lax")
+                st.link_button("Connect Instagram",instagram_auth_url(state),type="primary")
             except Exception as exc: st.error(str(exc))
     items=posts()
     ready=[x for x in items if x.get("video_path") and Path(x["video_path"]).exists()]
@@ -515,4 +494,4 @@ TOKEN_ENCRYPTION_KEY = "YOUR_FERNET_KEY"
     st.subheader("Readiness")
     checks=[("Gemini API key",bool(setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))),("Hugging Face S3 key",bool(setting("HF_ACCESS_KEY"))),("Hugging Face S3 secret",bool(setting("HF_SECRET_KEY"))),("Instagram app ID",bool(setting("INSTAGRAM_APP_ID"))),("Instagram app secret",bool(setting("INSTAGRAM_APP_SECRET"))),("Instagram redirect URI",bool(setting("INSTAGRAM_REDIRECT_URI"))),("Token encryption key",bool(setting("TOKEN_ENCRYPTION_KEY"))),("Instagram sign-in active",bool(get_instagram_connection()))]
     for label,ok in checks: st.write(("✅ " if ok else "⬜ ")+label)
-    st.warning("This starter stores app records and downloaded media on the app filesystem. For hosted production, move SQLite/media to managed persistent storage and use a secret manager. Do not expose the dashboard publicly without authentication.")
+    st.warning("This starter stores app records and downloaded media on the app filesystem. For hosted production, move SQLite/media to managed persistent storage and use a secret manager. Guest workspaces are separated by a random browser session. Clearing cookies or switching devices starts a new workspace.")
