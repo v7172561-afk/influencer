@@ -209,8 +209,9 @@ def _gradio_result_bytes(value, media_label: str) -> bytes:
     raise RuntimeError(f"The Hugging Face Space returned an unreadable {media_label} file.")
 
 
-def generate_portrait(prompt: str, aspect_ratio: str = "4:5") -> bytes:
-    check_generation_limit("image")
+def generate_portrait(prompt: str, aspect_ratio: str = "4:5", count_usage: bool = True) -> bytes:
+    if count_usage:
+        check_generation_limit("image")
     dimensions = {
         "4:5": (1024, 1280),
         "1:1": (1024, 1024),
@@ -237,31 +238,37 @@ def generate_portrait(prompt: str, aspect_ratio: str = "4:5") -> bytes:
 
 
 def generate_social_copy(topic: str, media_type: str = "Reel") -> dict:
-    key = setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY")
-    if not key:
-        clean_topic = (topic or "A new look from our virtual creator").strip()
+    clean_topic = (topic or "A new look from our virtual creator").strip()
+
+    def fallback_copy():
         return {
             "title": clean_topic[:70],
             "caption": f"{clean_topic} ✨\nA little inspiration from our virtual creator. Follow for more looks and ideas.",
             "hashtags": "#AIInfluencer #VirtualCreator #DigitalCreator #Reels #Fashion",
         }
-    from google import genai
-    from google.genai import types
-    client = genai.Client(api_key=key)
-    response = client.models.generate_content(
-        model=setting("GEMINI_TEXT_MODEL", "gemini-3.1-flash"),
-        contents=f"Create social media copy for a fictional adult AI influencer. Topic: {topic}. Format: {media_type}. Return concise JSON only with keys title, caption, hashtags. Caption should sound natural and engaging, include a clear hook, and avoid claiming the person is real. Hashtags should be 5-10 relevant hashtags as a space-separated string.",
-        config=types.GenerateContentConfig(response_mime_type="application/json"),
-    )
+
+    key = setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY")
+    if not key:
+        return fallback_copy()
+
+    # Gemini is optional. A text API problem must never block image/video generation.
     try:
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=key)
+        response = client.models.generate_content(
+            model=setting("GEMINI_TEXT_MODEL", "gemini-3.1-flash"),
+            contents=f"Create social media copy for a fictional adult AI influencer. Topic: {clean_topic}. Format: {media_type}. Return concise JSON only with keys title, caption, hashtags. Caption should sound natural and engaging, include a clear hook, and avoid claiming the person is real. Hashtags should be 5-10 relevant hashtags as a space-separated string.",
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
         result = json.loads(response.text or "{}")
+        return {
+            "title": str(result.get("title") or clean_topic[:70]),
+            "caption": str(result.get("caption") or clean_topic),
+            "hashtags": str(result.get("hashtags") or "#AIInfluencer #VirtualCreator #Reels"),
+        }
     except Exception:
-        result = {}
-    return {
-        "title": str(result.get("title") or topic[:70]),
-        "caption": str(result.get("caption") or topic),
-        "hashtags": str(result.get("hashtags") or "#AIInfluencer #VirtualCreator #Reels"),
-    }
+        return fallback_copy()
 
 
 def google_access_token() -> str:
@@ -293,7 +300,7 @@ def generate_video(
             "Keep the subject clearly visible, with natural anatomy and a clean composition. "
             f"Scene and visual direction: {prompt}"
         )
-        frame_bytes = generate_portrait(frame_prompt, "9:16")
+        frame_bytes = generate_portrait(frame_prompt, "9:16", count_usage=False)
         local_ref = MEDIA_DIR / f"video_start_frame_{uuid.uuid4().hex}.png"
         local_ref.write_bytes(frame_bytes)
 
