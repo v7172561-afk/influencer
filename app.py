@@ -180,41 +180,89 @@ def download_gcs(uri: str, destination: str):
     bucket_name, key = uri.removeprefix("hf://").split("/", 1)
     hf_client().download_file(bucket_name, key, destination)
 
+def _zero_gpu_client(space_id: str):
+    """Create a server-side Gradio client using only the deployment-level HF token."""
+    from gradio_client import Client
+    token = setting("HF_TOKEN")
+    return Client(space_id, token=token or None, verbose=False)
+
+
+def _gradio_result_bytes(value, media_label: str) -> bytes:
+    """Read a Gradio Client file output whether it is returned as a path or URL."""
+    candidate = value
+    if isinstance(candidate, (tuple, list)):
+        candidate = candidate[0] if candidate else None
+    if isinstance(candidate, dict):
+        candidate = candidate.get("path") or candidate.get("url")
+    if candidate is None:
+        raise RuntimeError(f"The Hugging Face Space returned no {media_label} file.")
+    if isinstance(candidate, bytes):
+        return candidate
+    candidate = str(candidate)
+    if candidate.startswith(("https://", "http://")):
+        response = requests.get(candidate, timeout=180)
+        response.raise_for_status()
+        return response.content
+    file_path = Path(candidate)
+    if file_path.is_file():
+        return file_path.read_bytes()
+    raise RuntimeError(f"The Hugging Face Space returned an unreadable {media_label} file.")
+
+
 def generate_portrait(prompt: str, aspect_ratio: str = "4:5") -> bytes:
     check_generation_limit("image")
-    from google import genai
-    from google.genai import types
-    key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY")
-    if not key: raise RuntimeError("Add GEMINI_API_KEY in Streamlit Secrets.")
-    client=genai.Client(api_key=key)
-    response=client.models.generate_content(
-        model=setting("GEMINI_IMAGE_MODEL","gemini-3.1-flash-image"),
-        contents=prompt,
-        config=types.GenerateContentConfig(response_modalities=["IMAGE","TEXT"],image_config=types.ImageConfig(aspect_ratio=aspect_ratio)),
-    )
-    for candidate in response.candidates or []:
-        for part in candidate.content.parts or []:
-            if getattr(part,"inline_data",None):
-                return part.inline_data.data
-    raise RuntimeError("The image model returned no image. Check model access and billing.")
+    dimensions = {
+        "4:5": (1024, 1280),
+        "1:1": (1024, 1024),
+        "9:16": (864, 1536),
+    }
+    width, height = dimensions.get(aspect_ratio, dimensions["4:5"])
+    try:
+        client = _zero_gpu_client("black-forest-labs/FLUX.1-schnell")
+        result = client.predict(
+            prompt=prompt,
+            seed=0,
+            randomize_seed=True,
+            width=width,
+            height=height,
+            num_inference_steps=4,
+            api_name="/infer",
+        )
+        return _gradio_result_bytes(result, "image")
+    except Exception as exc:
+        raise RuntimeError(
+            "FLUX.1 Schnell on Hugging Face ZeroGPU is temporarily busy or unavailable. "
+            "Please retry in a moment. Details: " + str(exc)[:500]
+        ) from exc
+
 
 def generate_social_copy(topic: str, media_type: str = "Reel") -> dict:
+    key = setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY")
+    if not key:
+        clean_topic = (topic or "A new look from our virtual creator").strip()
+        return {
+            "title": clean_topic[:70],
+            "caption": f"{clean_topic} ✨\nA little inspiration from our virtual creator. Follow for more looks and ideas.",
+            "hashtags": "#AIInfluencer #VirtualCreator #DigitalCreator #Reels #Fashion",
+        }
     from google import genai
     from google.genai import types
-    key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY")
-    if not key:
-        raise RuntimeError("Add GOOGLE_API_KEY in Streamlit Secrets to generate captions.")
-    client=genai.Client(api_key=key)
-    response=client.models.generate_content(
-        model=setting("GEMINI_TEXT_MODEL","gemini-3.1-flash"),
+    client = genai.Client(api_key=key)
+    response = client.models.generate_content(
+        model=setting("GEMINI_TEXT_MODEL", "gemini-3.1-flash"),
         contents=f"Create social media copy for a fictional adult AI influencer. Topic: {topic}. Format: {media_type}. Return concise JSON only with keys title, caption, hashtags. Caption should sound natural and engaging, include a clear hook, and avoid claiming the person is real. Hashtags should be 5-10 relevant hashtags as a space-separated string.",
         config=types.GenerateContentConfig(response_mime_type="application/json"),
     )
     try:
-        result=json.loads(response.text or "{}")
+        result = json.loads(response.text or "{}")
     except Exception:
-        result={}
-    return {"title":str(result.get("title") or topic[:70]),"caption":str(result.get("caption") or topic),"hashtags":str(result.get("hashtags") or "#AIInfluencer #VirtualCreator #Reels")}
+        result = {}
+    return {
+        "title": str(result.get("title") or topic[:70]),
+        "caption": str(result.get("caption") or topic),
+        "hashtags": str(result.get("hashtags") or "#AIInfluencer #VirtualCreator #Reels"),
+    }
+
 
 def google_access_token() -> str:
     import google.auth
@@ -223,41 +271,54 @@ def google_access_token() -> str:
     credentials.refresh(Request())
     return credentials.token
 
-def generate_video(prompt: str, reference_uri: str = "", local_reference_path: str = "") -> bytes:
+def generate_video(
+    prompt: str,
+    reference_uri: str = "",
+    local_reference_path: str = "",
+    duration_seconds: float = 3.0,
+) -> bytes:
     check_generation_limit("video")
-    client=__import__("google.genai",fromlist=["Client"]).Client(api_key=setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
-    if reference_uri or local_reference_path:
-        if reference_uri.startswith("hf://"):
-            local_ref=MEDIA_DIR/"video_reference_source"
-            download_gcs(reference_uri,str(local_ref))
-        elif local_reference_path and Path(local_reference_path).exists():
-            local_ref=Path(local_reference_path)
-        else:
-            raise RuntimeError("The saved reference portrait is unavailable. Please upload it again.")
-        with Image.open(local_ref) as source:
-            image_buffer=BytesIO()
-            source.convert("RGB").save(image_buffer,format="JPEG",quality=95)
-            image_bytes=image_buffer.getvalue()
-        image_b64=base64.b64encode(image_bytes).decode("ascii")
-        input_payload=[
-            {"type":"image","data":image_b64,"mime_type":"image/jpeg"},
-            {"type":"text","text":prompt+" The person in <IMAGE_REF_0> is the same fictional adult influencer. Preserve her facial identity, hairstyle and overall appearance while animating the described scene."},
-        ]
-        task="image_to_video"
+
+    # Wan 2.2's selected public ZeroGPU Space is image-to-video. For a text-only
+    # request, first create a vertical opening frame with FLUX, then animate it.
+    if reference_uri.startswith("hf://"):
+        local_ref = MEDIA_DIR / f"video_reference_{uuid.uuid4().hex}.jpg"
+        download_gcs(reference_uri, str(local_ref))
+    elif local_reference_path and Path(local_reference_path).is_file():
+        local_ref = Path(local_reference_path)
     else:
-        input_payload=prompt+" Create an original vertical short video featuring fictional adult characters."
-        task="text_to_video"
-    interaction=client.interactions.create(
-        model=setting("GEMINI_VIDEO_MODEL","gemini-omni-1.1-flash"),
-        input=input_payload,
-        response_format={"type":"video","aspect_ratio":"9:16"},
-        generation_config={"video_config":{"task":task}},
-    )
-    video=getattr(interaction,"output_video",None)
-    data=getattr(video,"data",None) if video else None
-    if not data:
-        raise RuntimeError("Gemini returned no video. Confirm gemini-omni-1.1-flash is enabled for your API key and check quota/billing.")
-    return base64.b64decode(data)
+        frame_prompt = (
+            "Create a photorealistic vertical 9:16 opening frame for a short social video. "
+            "Show one fictional adult AI influencer, age 25 or older. "
+            "Keep the subject clearly visible, with natural anatomy and a clean composition. "
+            f"Scene and visual direction: {prompt}"
+        )
+        frame_bytes = generate_portrait(frame_prompt, "9:16")
+        local_ref = MEDIA_DIR / f"video_start_frame_{uuid.uuid4().hex}.png"
+        local_ref.write_bytes(frame_bytes)
+
+    try:
+        from gradio_client import handle_file
+        client = _zero_gpu_client("zerogpu-aoti/wan2-2-fp8da-aoti-faster")
+        result = client.predict(
+            input_image=handle_file(str(local_ref)),
+            prompt=prompt,
+            steps=4,
+            negative_prompt="blurry, low quality, distorted face, extra fingers, text, watermark, frozen motion",
+            duration_seconds=max(0.5, min(5.0, float(duration_seconds))),
+            guidance_scale=1.0,
+            guidance_scale_2=1.0,
+            seed=0,
+            randomize_seed=True,
+            api_name="/generate_video",
+        )
+        return _gradio_result_bytes(result, "video")
+    except Exception as exc:
+        raise RuntimeError(
+            "Wan 2.2 on Hugging Face ZeroGPU is busy or could not finish this clip. "
+            "Please retry with a shorter clip. Details: " + str(exc)[:500]
+        ) from exc
+
 
 def token_cipher():
     key=setting("TOKEN_ENCRYPTION_KEY")
