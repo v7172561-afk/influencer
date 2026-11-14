@@ -216,7 +216,7 @@ def sync_bucket_media(force: bool = False):
         "3e2f12bf7124d7d59ce37568": ["users/6e186227410f5e07c32ddf46/"],
     }
     prefixes = [prefix, *legacy_prefixes.get(tenant, [])]
-    sync_key = f"hf_bucket_media_sync_{tenant}"
+    sync_key = f"hf_bucket_media_sync_v2_{tenant}"
     last_sync = float(st.session_state.get(sync_key, 0) or 0)
     if not force and time.time() - last_sync < 30:
         return 0
