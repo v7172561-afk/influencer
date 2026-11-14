@@ -135,7 +135,32 @@ def save_profile(name,niche,bio,persona,reference_path=None,reference_uri=None):
         c.execute("UPDATE profile SET name=?,niche=?,bio=?,persona=?,reference_path=COALESCE(?,reference_path),reference_uri=COALESCE(?,reference_uri) WHERE id=1",(name,niche,bio,persona,reference_path,reference_uri))
 
 def posts():
-    with db() as c: return [dict(r) for r in c.execute("SELECT * FROM posts ORDER BY created_at DESC")]
+    # Import new files uploaded directly to this user's Hugging Face bucket,
+    # then download cloud-only media so the existing Streamlit gallery can show it.
+    try:
+        sync_bucket_media()
+    except Exception:
+        # Bucket storage is optional; local content must continue to work if it is unavailable.
+        pass
+    with db() as c:
+        items = [dict(r) for r in c.execute("SELECT * FROM posts ORDER BY created_at DESC")]
+    for item in items:
+        for uri_field, path_field in (("image_uri", "image_path"), ("video_uri", "video_path")):
+            uri = item.get(uri_field) or ""
+            local_path = item.get(path_field) or ""
+            if uri.startswith("hf://") and (not local_path or not Path(local_path).is_file()):
+                try:
+                    suffix = Path(uri.removeprefix("hf://").split("/", 1)[1]).suffix.lower()
+                    if not suffix:
+                        suffix = ".jpg" if uri_field == "image_uri" else ".mp4"
+                    destination = MEDIA_DIR / f"{item['id']}{suffix}"
+                    download_gcs(uri, str(destination))
+                    update_post(item["id"], **{path_field: str(destination)})
+                    item[path_field] = str(destination)
+                except Exception:
+                    # Keep the item in the library even if a particular download fails.
+                    pass
+    return items
 
 def save_post(prompt,caption,hashtags):
     pid=uuid.uuid4().hex[:12]
@@ -179,6 +204,77 @@ def download_gcs(uri: str, destination: str):
         raise RuntimeError("This media item is not stored in the configured Hugging Face bucket.")
     bucket_name, key = uri.removeprefix("hf://").split("/", 1)
     hf_client().download_file(bucket_name, key, destination)
+
+
+def sync_bucket_media():
+    """Discover image/video files uploaded directly under this browser workspace's bucket prefix."""
+    if not (setting("HF_ACCESS_KEY") and setting("HF_SECRET_KEY")):
+        return
+
+    sync_key = f"hf_bucket_media_sync_{tenant}"
+    last_sync = float(st.session_state.get(sync_key, 0) or 0)
+    if time.time() - last_sync < 30:
+        return
+    # Throttle retries too, so a storage outage does not slow every Streamlit rerun.
+    st.session_state[sync_key] = time.time()
+
+    prefix = f"users/{tenant}/"
+    image_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+    video_extensions = {".mp4", ".mov", ".m4v", ".webm"}
+    client = hf_client()
+    paginator = client.get_paginator("list_objects_v2")
+
+    with db() as c:
+        known_uris = set()
+        for row in c.execute("SELECT image_uri, video_uri FROM posts"):
+            if row["image_uri"]:
+                known_uris.add(row["image_uri"])
+            if row["video_uri"]:
+                known_uris.add(row["video_uri"])
+
+        for page in paginator.paginate(Bucket=hf_bucket(), Prefix=prefix):
+            for obj in page.get("Contents", []):
+                key = obj.get("Key", "")
+                if not key or obj.get("Size", 0) <= 0:
+                    continue
+                relative = key[len(prefix):]
+                parts = relative.split("/", 1)
+                if len(parts) != 2:
+                    continue
+                folder, filename = parts
+                suffix = Path(filename).suffix.lower()
+                if folder == "images" and suffix in image_extensions:
+                    media_field = "image_uri"
+                    media_kind = "image"
+                elif folder == "videos" and suffix in video_extensions:
+                    media_field = "video_uri"
+                    media_kind = "video"
+                else:
+                    continue
+
+                uri = f"hf://{hf_bucket()}/{key}"
+                if uri in known_uris:
+                    continue
+
+                pid = "bucket_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+                modified = obj.get("LastModified")
+                created_at = modified.isoformat() if modified else now()
+                caption = f"Uploaded {media_kind} · {filename}"
+                c.execute(
+                    "INSERT OR IGNORE INTO posts(id,created_at,prompt,caption,hashtags,status,image_uri,video_uri) "
+                    "VALUES(?,?,?,?,?,'ready',?,?)",
+                    (
+                        pid,
+                        created_at,
+                        "Uploaded directly to the Hugging Face media bucket.",
+                        caption,
+                        "",
+                        uri if media_field == "image_uri" else "",
+                        uri if media_field == "video_uri" else "",
+                    ),
+                )
+                known_uris.add(uri)
+
 
 def _zero_gpu_client(space_id: str):
     """Create a server-side Gradio client against Hugging Face Hub, not the S3 storage endpoint."""
@@ -644,11 +740,17 @@ elif page=="Create content":
             if "pid" in locals(): update_post(pid,status="failed",error=str(e))
             st.error(str(e))
     st.divider()
-    st.subheader("Saved videos")
+    st.subheader("Saved media")
     for item in posts():
-        if item["video_path"] and Path(item["video_path"]).exists():
+        has_video = item.get("video_path") and Path(item["video_path"]).exists()
+        has_image = item.get("image_path") and Path(item["image_path"]).exists()
+        if has_video or has_image:
             with st.expander(f"{item['created_at'][:10]} · {item['status']} · {item['id']}"):
-                st.video(item["video_path"]); st.write(item["caption"])
+                if has_video:
+                    st.video(item["video_path"])
+                elif has_image:
+                    st.image(item["image_path"], use_container_width=True)
+                st.write(item["caption"])
 
 elif page=="Publishing & analytics":
     st.title("Publishing & performance")
