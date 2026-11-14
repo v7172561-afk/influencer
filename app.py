@@ -135,13 +135,11 @@ def save_profile(name,niche,bio,persona,reference_path=None,reference_uri=None):
         c.execute("UPDATE profile SET name=?,niche=?,bio=?,persona=?,reference_path=COALESCE(?,reference_path),reference_uri=COALESCE(?,reference_uri) WHERE id=1",(name,niche,bio,persona,reference_path,reference_uri))
 
 def posts():
-    # Import new files uploaded directly to this user's Hugging Face bucket,
-    # then download cloud-only media so the existing Streamlit gallery can show it.
+    # Import new files uploaded directly to this user's Hugging Face bucket.
     try:
         sync_bucket_media()
-    except Exception:
-        # Bucket storage is optional; local content must continue to work if it is unavailable.
-        pass
+    except Exception as exc:
+        st.session_state["hf_bucket_sync_error"] = str(exc)[:500]
     with db() as c:
         items = [dict(r) for r in c.execute("SELECT * FROM posts ORDER BY created_at DESC")]
     for item in items:
@@ -157,9 +155,8 @@ def posts():
                     download_gcs(uri, str(destination))
                     update_post(item["id"], **{path_field: str(destination)})
                     item[path_field] = str(destination)
-                except Exception:
-                    # Keep the item in the library even if a particular download fails.
-                    pass
+                except Exception as exc:
+                    st.session_state["hf_bucket_download_error"] = str(exc)[:500]
     return items
 
 def save_post(prompt,caption,hashtags):
@@ -206,23 +203,23 @@ def download_gcs(uri: str, destination: str):
     hf_client().download_file(bucket_name, key, destination)
 
 
-def sync_bucket_media():
-    """Discover image/video files uploaded directly under this browser workspace's bucket prefix."""
+def sync_bucket_media(force: bool = False):
+    """Import image/video objects from the current user's bucket prefix into the media library."""
     if not (setting("HF_ACCESS_KEY") and setting("HF_SECRET_KEY")):
-        return
-
-    sync_key = f"hf_bucket_media_sync_{tenant}"
-    last_sync = float(st.session_state.get(sync_key, 0) or 0)
-    if time.time() - last_sync < 30:
-        return
-    # Throttle retries too, so a storage outage does not slow every Streamlit rerun.
-    st.session_state[sync_key] = time.time()
+        raise RuntimeError("Hugging Face storage credentials are missing (HF_ACCESS_KEY / HF_SECRET_KEY).")
 
     prefix = f"users/{tenant}/"
+    sync_key = f"hf_bucket_media_sync_{tenant}"
+    last_sync = float(st.session_state.get(sync_key, 0) or 0)
+    if not force and time.time() - last_sync < 30:
+        return 0
+
     image_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
     video_extensions = {".mp4", ".mov", ".m4v", ".webm"}
     client = hf_client()
     paginator = client.get_paginator("list_objects_v2")
+    discovered = 0
+    imported = 0
 
     with db() as c:
         known_uris = set()
@@ -237,6 +234,7 @@ def sync_bucket_media():
                 key = obj.get("Key", "")
                 if not key or obj.get("Size", 0) <= 0:
                     continue
+                discovered += 1
                 relative = key[len(prefix):]
                 parts = relative.split("/", 1)
                 if len(parts) != 2:
@@ -244,11 +242,9 @@ def sync_bucket_media():
                 folder, filename = parts
                 suffix = Path(filename).suffix.lower()
                 if folder == "images" and suffix in image_extensions:
-                    media_field = "image_uri"
-                    media_kind = "image"
+                    media_field, media_kind = "image_uri", "image"
                 elif folder == "videos" and suffix in video_extensions:
-                    media_field = "video_uri"
-                    media_kind = "video"
+                    media_field, media_kind = "video_uri", "video"
                 else:
                     continue
 
@@ -264,17 +260,23 @@ def sync_bucket_media():
                     "INSERT OR IGNORE INTO posts(id,created_at,prompt,caption,hashtags,status,image_uri,video_uri) "
                     "VALUES(?,?,?,?,?,'ready',?,?)",
                     (
-                        pid,
-                        created_at,
+                        pid, created_at,
                         "Uploaded directly to the Hugging Face media bucket.",
-                        caption,
-                        "",
+                        caption, "",
                         uri if media_field == "image_uri" else "",
                         uri if media_field == "video_uri" else "",
                     ),
                 )
                 known_uris.add(uri)
+                imported += 1
 
+    st.session_state[sync_key] = time.time()
+    st.session_state["hf_bucket_sync_error"] = ""
+    st.session_state["hf_bucket_sync_status"] = (
+        f"Checked bucket '{hf_bucket()}' at users/{tenant}/ — "
+        f"found {discovered} objects and imported {imported} new image/video files."
+    )
+    return imported
 
 def _zero_gpu_client(space_id: str):
     """Create a server-side Gradio client against Hugging Face Hub, not the S3 storage endpoint."""
@@ -741,6 +743,20 @@ elif page=="Create content":
             st.error(str(e))
     st.divider()
     st.subheader("Saved media")
+    if st.button("Refresh media from Hugging Face bucket", key="refresh_hf_bucket_media"):
+        try:
+            with st.spinner("Checking your Hugging Face bucket..."):
+                sync_bucket_media(force=True)
+                st.rerun()
+        except Exception as exc:
+            st.session_state["hf_bucket_sync_error"] = str(exc)[:500]
+    if st.session_state.get("hf_bucket_sync_error"):
+        st.error("Bucket sync failed: " + st.session_state["hf_bucket_sync_error"])
+    elif st.session_state.get("hf_bucket_sync_status"):
+        st.caption(st.session_state["hf_bucket_sync_status"])
+    download_error = st.session_state.get("hf_bucket_download_error")
+    if download_error:
+        st.warning("A saved bucket file could not be downloaded for preview: " + download_error)
     for item in posts():
         has_video = item.get("video_path") and Path(item["video_path"]).exists()
         has_image = item.get("image_path") and Path(item["image_path"]).exists()
