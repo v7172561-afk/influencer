@@ -755,6 +755,10 @@ elif page=="Create content":
     st.divider()
     st.subheader("Saved media")
     media_items = posts()
+    if st.session_state.get("hf_bucket_sync_error"):
+        st.error("Could not check saved media storage: " + st.session_state["hf_bucket_sync_error"])
+    if st.session_state.get("hf_bucket_download_error"):
+        st.warning("A saved image or video could not be loaded: " + st.session_state["hf_bucket_download_error"])
     visible_media = []
     for item in media_items:
         has_video = bool(item.get("video_path") and Path(item["video_path"]).is_file())
