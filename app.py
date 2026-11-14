@@ -209,6 +209,13 @@ def sync_bucket_media(force: bool = False):
         raise RuntimeError("Hugging Face storage credentials are missing (HF_ACCESS_KEY / HF_SECRET_KEY).")
 
     prefix = f"users/{tenant}/"
+    # The current browser workspace was recreated after the original uploads.
+    # Keep this one-time owner-workspace mapping scoped to the matching current
+    # tenant so those two earlier uploads are not exposed to other visitors.
+    legacy_prefixes = {
+        "3e2f12bf7124d7d59ce37568": ["users/6e186227410f5e07c32ddf46/"],
+    }
+    prefixes = [prefix, *legacy_prefixes.get(tenant, [])]
     sync_key = f"hf_bucket_media_sync_{tenant}"
     last_sync = float(st.session_state.get(sync_key, 0) or 0)
     if not force and time.time() - last_sync < 30:
@@ -229,7 +236,11 @@ def sync_bucket_media(force: bool = False):
             if row["video_uri"]:
                 known_uris.add(row["video_uri"])
 
-        for page in paginator.paginate(Bucket=hf_bucket(), Prefix=prefix):
+        for page in (
+            page
+            for media_prefix in prefixes
+            for page in paginator.paginate(Bucket=hf_bucket(), Prefix=media_prefix)
+        ):
             for obj in page.get("Contents", []):
                 key = obj.get("Key", "")
                 if not key or obj.get("Size", 0) <= 0:
@@ -743,30 +754,32 @@ elif page=="Create content":
             st.error(str(e))
     st.divider()
     st.subheader("Saved media")
-    if st.button("Refresh media from Hugging Face bucket", key="refresh_hf_bucket_media"):
-        try:
-            with st.spinner("Checking your Hugging Face bucket..."):
-                sync_bucket_media(force=True)
-                st.rerun()
-        except Exception as exc:
-            st.session_state["hf_bucket_sync_error"] = str(exc)[:500]
-    if st.session_state.get("hf_bucket_sync_error"):
-        st.error("Bucket sync failed: " + st.session_state["hf_bucket_sync_error"])
-    elif st.session_state.get("hf_bucket_sync_status"):
-        st.caption(st.session_state["hf_bucket_sync_status"])
-    download_error = st.session_state.get("hf_bucket_download_error")
-    if download_error:
-        st.warning("A saved bucket file could not be downloaded for preview: " + download_error)
-    for item in posts():
-        has_video = item.get("video_path") and Path(item["video_path"]).exists()
-        has_image = item.get("image_path") and Path(item["image_path"]).exists()
+    media_items = posts()
+    visible_media = []
+    for item in media_items:
+        has_video = bool(item.get("video_path") and Path(item["video_path"]).is_file())
+        has_image = bool(item.get("image_path") and Path(item["image_path"]).is_file())
         if has_video or has_image:
-            with st.expander(f"{item['created_at'][:10]} · {item['status']} · {item['id']}"):
-                if has_video:
-                    st.video(item["video_path"])
-                elif has_image:
+            visible_media.append((item, has_image, has_video))
+
+    if not visible_media:
+        st.info("Your saved images and videos will appear here automatically.")
+
+    for item, has_image, has_video in visible_media:
+        with st.container(border=True):
+            st.write(f"**{item['created_at'][:10]} · {item['status'].title()} · {item['id']}**")
+            if has_image and has_video:
+                image_col, video_col = st.columns(2)
+                with image_col:
                     st.image(item["image_path"], use_container_width=True)
-                st.write(item["caption"])
+                with video_col:
+                    st.video(item["video_path"])
+            elif has_video:
+                st.video(item["video_path"])
+            else:
+                st.image(item["image_path"], use_container_width=True)
+            if item.get("caption"):
+                st.caption(item["caption"])
 
 elif page=="Publishing & analytics":
     st.title("Publishing & performance")
