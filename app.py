@@ -181,7 +181,12 @@ def download_gcs(uri: str, destination: str):
     hf_client().download_file(bucket_name, key, destination)
 
 def _zero_gpu_client(space_id: str):
-    """Create a server-side Gradio client using only the deployment-level HF token."""
+    """Create a server-side Gradio client against Hugging Face Hub, not the S3 storage endpoint."""
+    # HF_ENDPOINT is also used by huggingface_hub/gradio_client. This app uses
+    # the same variable name in Streamlit Secrets for its S3 bucket endpoint,
+    # so force the official Hub endpoint before Gradio resolves the Space URL.
+    # boto3 storage calls remain pointed at setting("HF_ENDPOINT") explicitly.
+    os.environ["HF_ENDPOINT"] = "https://huggingface.co"
     from gradio_client import Client
     token = setting("HF_TOKEN")
     return Client(space_id, token=token or None, verbose=False)
