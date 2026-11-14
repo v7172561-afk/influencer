@@ -482,15 +482,15 @@ elif page=="How to use":
     st.title("How to use Influencer Studio")
     st.write("A guided tour of the main tools, with examples of what each step does. Explore the app without connecting Instagram.")
     st.subheader("The complete creator workflow")
-    st.markdown("**1. Set up services → 2. Create your influencer → 3. Generate images and videos → 4. Review content → 5. Connect Instagram and publish → 6. Check available insights.**")
+    st.markdown("**1. Set up Hugging Face ZeroGPU → 2. Create your influencer → 3. Generate images and videos → 4. Review content → 5. Connect Instagram and publish → 6. Check available insights.**")
     st.divider()
     with st.container(border=True):
         st.subheader("1 · Setup: connect the services you want")
-        st.markdown("- **Gemini API key:** powers AI portraits, model images, video generation and social captions.\n- **Hugging Face storage (optional):** stores media in your S3-compatible bucket. Without it, files stay in the current app workspace and may not persist on Streamlit Cloud.\n- **Instagram app credentials:** your Meta developer app's ID, secret and exact redirect URI are used for Instagram OAuth. Instagram is optional.")
+        st.markdown("- **Hugging Face ZeroGPU:** powers FLUX.1 Schnell image generation and Wan 2.2 short video generation.\n- **Optional Gemini API key:** improves captions and hashtags only.\n- **Hugging Face storage (optional):** stores media in your S3-compatible bucket. Without it, files stay in the current app workspace and may not persist on Streamlit Cloud.\n- **Instagram app credentials:** your Meta developer app's ID, secret and exact redirect URI are used for Instagram OAuth. Instagram is optional.")
         st.info("Demo: Setup shows whether each service is configured. This guide does not create fake API connections or sample analytics.")
     with st.container(border=True):
         st.subheader("2 · My influencer: build a consistent virtual creator")
-        st.markdown("Choose a creator name, niche, bio and stable identity description. Generate a reference portrait with Gemini or upload an image. The saved portrait can guide future video generations.")
+        st.markdown("Choose a creator name, niche, bio and stable identity description. Generate a reference portrait with FLUX.1 Schnell on Hugging Face ZeroGPU or upload an image. The saved portrait can guide future Wan 2.2 video generations.")
         st.code("Example identity: fictional adult creator, age 25+, warm confident personality, shoulder-length dark hair, natural expressions.",language="text")
     with st.container(border=True):
         st.subheader("3 · Create content: make images, videos and captions")
@@ -509,7 +509,7 @@ elif page=="How to use":
         st.markdown("After a Reel is published, use **Refresh insights** to request metrics exposed by Instagram's API for that media item, such as views, reach, likes, comments, shares and saves when supported.")
         st.info("This is not a full copy of Instagram's in-app Professional Dashboard. Audience demographics, follower trends and other metrics are not shown unless the connected API exposes them.")
     st.subheader("Quick start")
-    st.markdown("1. Open **Setup** and add a Gemini key if needed.\n2. Open **My influencer** and save a profile plus reference portrait.\n3. Open **Create content** and generate an image or video.\n4. Open **Publishing & analytics** when you want to connect Instagram and publish.")
+    st.markdown("1. Add `HF_TOKEN` to Streamlit Cloud → App settings → Secrets.\n2. Open **My influencer** and save a profile plus reference portrait.\n3. Open **Create content** and generate an image or video.\n4. Open **Publishing & analytics** when you want to connect Instagram and publish.")
 
 elif page=="My influencer":
     st.title("Your influencer identity")
@@ -603,7 +603,8 @@ elif page=="Create content":
         st.info("Text-to-video mode selected. Choose your saved portrait or a generated model image to guide the video.")
     topic=st.text_input("Video idea",placeholder="e.g. 3 easy summer outfit ideas")
     scene=st.text_area("What should happen in the video?", "The influencer smiles at the camera, walks naturally toward the camera, and shows the outfit in a bright modern studio. Natural motion, realistic hands, no text overlays.")
-    st.caption("Gemini Omni Flash currently chooses the generated clip length; use the prompt to guide pacing and scene complexity.")
+    video_duration=st.slider("Video length (seconds)",min_value=0.5,max_value=5.0,value=3.0,step=0.5)
+    st.caption("Wan 2.2 creates a short image-to-video clip (up to 5 seconds at 16 FPS). With no reference image, FLUX first creates a vertical opening frame.")
     if st.button("Create video",type="primary"):
         try:
             with st.spinner("Preparing your video job..."):
@@ -616,7 +617,7 @@ elif page=="Create content":
                 ref_uri=p.get("reference_uri","") if has_reference else ""
                 if has_reference and not ref_uri:
                     ref_uri=upload_gcs(p["reference_path"],f"users/{tenant}/references/influencer_reference.jpg")
-                video_bytes=generate_video(prompt,ref_uri,p.get("reference_path","") if has_reference else "")
+                video_bytes=generate_video(prompt,ref_uri,selected_reference_path if has_reference else "",video_duration)
                 local=MEDIA_DIR/f"{pid}.mp4"; local.write_bytes(video_bytes)
                 try:
                     video_uri=upload_gcs(str(local),f"users/{tenant}/videos/{pid}.mp4")
@@ -698,13 +699,25 @@ elif page=="Publishing & analytics":
 
 elif page=="Setup":
     st.title("Your API keys & connections")
-    st.caption("Add your own Gemini key, optional Hugging Face storage credentials, and Meta Instagram app credentials. Visitor-entered values stay in this active browser session.")
+    st.caption("Configure the hidden Hugging Face generation token, optional caption key and media storage, and your Meta Instagram app.")
     app_gemini=bool(setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
     app_hf=bool(setting("HF_ACCESS_KEY") and setting("HF_SECRET_KEY"))
     visitor_secrets=st.session_state.get("visitor_api_secrets",{})
     with st.container(border=True):
-        st.subheader("Gemini API key")
-        st.write("Use your own Google AI Studio key for image, video and caption generation.")
+        st.subheader("Hugging Face ZeroGPU generation")
+        st.write("Images use FLUX.1 Schnell and short videos use Wan 2.2. The Hugging Face Hub token stays on the server and is never shown to visitors.")
+        hf_hub_ready = bool(setting("HF_TOKEN"))
+        if hf_hub_ready:
+            st.success("HF_TOKEN is configured in the app deployment Secrets.")
+        else:
+            st.warning("HF_TOKEN is not configured. Public Spaces may still allow anonymous calls, but the unauthenticated quota is smaller.")
+        st.markdown("Add this in Streamlit Cloud → App settings → Secrets (use a Hugging Face token with read access):")
+        st.code('HF_TOKEN = "hf_your_read_token"', language="toml")
+        st.caption("All visitors share the app owner's Hugging Face ZeroGPU quota when this one server-side token is used. The free quota is limited; this is suitable for a small demo, not unlimited public generation.")
+
+    with st.container(border=True):
+        st.subheader("Optional Gemini key for enhanced captions")
+        st.write("Image and video generation use Hugging Face ZeroGPU. A Gemini key is optional and only improves generated captions and hashtags.")
         with st.form("visitor_gemini_key_form"):
             gemini_input=st.text_input("Gemini API key",type="password",placeholder="Paste your API key")
             gemini_submit=st.form_submit_button("Save Gemini key",type="primary")
@@ -728,7 +741,7 @@ elif page=="Setup":
         elif app_gemini:
             st.info("Gemini key: app owner's key is available")
         else:
-            st.warning("Gemini key: not configured")
+            st.caption("Gemini is optional. Without it, the app creates a simple caption and hashtags automatically.")
 
     with st.container(border=True):
         st.subheader("Hugging Face storage (optional)")
@@ -827,7 +840,7 @@ elif page=="Setup":
         gemini_ready=bool(visitor_secrets.get("GOOGLE_API_KEY") or setting("GOOGLE_API_KEY") or setting("GEMINI_API_KEY"))
         hf_ready=bool((visitor_secrets.get("HF_ACCESS_KEY") and visitor_secrets.get("HF_SECRET_KEY")) or (setting("HF_ACCESS_KEY") and setting("HF_SECRET_KEY")))
         instagram_ready=all(bool(setting(k)) for k in ("INSTAGRAM_APP_ID","INSTAGRAM_APP_SECRET","INSTAGRAM_REDIRECT_URI"))
-        rows=[("Gemini generation",gemini_ready),("Hugging Face storage",hf_ready),("Instagram app settings",instagram_ready),("Instagram account",bool(get_instagram_connection()))]
+        rows=[("Hugging Face ZeroGPU token",bool(setting("HF_TOKEN"))),("Optional Gemini captions",gemini_ready),("Hugging Face media storage",hf_ready),("Instagram app settings",instagram_ready),("Instagram account",bool(get_instagram_connection()))]
         for label,ready in rows:
             st.write(("✅ " if ready else "○ ")+label)
     st.info("Your entered keys and Instagram app credentials are kept in Streamlit session memory only. They are not committed to GitHub or saved in a shared database, and may disappear when the session expires or the app restarts. Instagram OAuth tokens are encrypted in the workspace database; for production, use managed persistent storage and dedicated per-user secret management.")
