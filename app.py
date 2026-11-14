@@ -589,7 +589,7 @@ elif page=="Create content":
                 st.error(str(exc))
     st.divider()
     st.title("Create an Instagram video")
-    st.caption("Generate a concept and caption, then create a vertical video using your saved influencer portrait.")
+    st.caption("Generate a short vertical clip from your saved portrait, any generated image, or an automatically created opening frame.")
     saved_visuals=[x for x in posts() if x.get("image_path") and Path(x["image_path"]).exists()]
     reference_options={"No reference image (text-to-video)":""}
     if p.get("reference_path") and Path(p["reference_path"]).exists():
@@ -600,7 +600,7 @@ elif page=="Create content":
     selected_reference_path=reference_options[selected_reference]
     has_reference=bool(selected_reference_path)
     if not has_reference:
-        st.info("Text-to-video mode selected. Choose your saved portrait or a generated model image to guide the video.")
+        st.info("No reference selected: FLUX will create a vertical opening image first, then Wan 2.2 will animate it.")
     topic=st.text_input("Video idea",placeholder="e.g. 3 easy summer outfit ideas")
     scene=st.text_area("What should happen in the video?", "The influencer smiles at the camera, walks naturally toward the camera, and shows the outfit in a bright modern studio. Natural motion, realistic hands, no text overlays.")
     video_duration=st.slider("Video length (seconds)",min_value=0.5,max_value=5.0,value=3.0,step=0.5)
@@ -608,15 +608,16 @@ elif page=="Create content":
     if st.button("Create video",type="primary"):
         try:
             with st.spinner("Preparing your video job..."):
-                reference_instruction="Use the saved portrait as the same adult influencer and preserve her identity." if has_reference else "Create an original fictional adult character; no reference image is supplied."
+                reference_instruction="Use the selected reference image and preserve the same fictional adult influencer identity." if has_reference else "Create an original fictional adult character; FLUX will create the opening image first."
                 prompt=f"Create a vertical 9:16 short social video. {scene} Topic: {topic}. {reference_instruction} High-quality social video, smooth natural motion, no captions, no logos. Use a single continuous shot unless the scene specifically requires multiple shots."
                 copy=generate_social_copy(topic or scene,"Reel")
                 caption=copy["caption"]
                 hashtags=copy["hashtags"]
                 pid=save_post(prompt,caption,hashtags)
-                ref_uri=p.get("reference_uri","") if has_reference else ""
-                if has_reference and not ref_uri:
-                    ref_uri=upload_gcs(p["reference_path"],f"users/{tenant}/references/influencer_reference.jpg")
+                selected_is_profile = selected_reference == "Saved influencer portrait"
+                ref_uri=p.get("reference_uri","") if selected_is_profile else ""
+                if selected_is_profile and has_reference and not ref_uri:
+                    ref_uri=upload_gcs(selected_reference_path,f"users/{tenant}/references/influencer_reference.jpg")
                 video_bytes=generate_video(prompt,ref_uri,selected_reference_path if has_reference else "",video_duration)
                 local=MEDIA_DIR/f"{pid}.mp4"; local.write_bytes(video_bytes)
                 try:
